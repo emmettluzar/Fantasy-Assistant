@@ -91,6 +91,57 @@ class ResetDraftPayload(BaseModel):
     )
 
 
+class RosterPlayerPayload(BaseModel):
+    """A rostered player used by the in-season optimizer/trade analyzer.
+
+    ``fantasy_points`` is the projected weekly (or rest-of-season) total; the
+    server derives it from the pool when omitted.
+    """
+
+    player_id: str
+    name: str = ""
+    position: Position
+    fantasy_points: Optional[float] = Field(default=None, ge=0)
+    team: str = ""
+    injury_tag: Optional[str] = Field(default=None)
+    weather: Optional[str] = Field(default=None)
+    ceiling: Optional[float] = Field(default=None, ge=0)
+    floor: Optional[float] = Field(default=None, ge=0)
+
+
+class OptimizeLineupPayload(BaseModel):
+    """Payload for ``OPTIMIZE_LINEUP``."""
+
+    roster: list[RosterPlayerPayload]
+
+
+class EvaluateTradePayload(BaseModel):
+    """Payload for ``EVALUATE_TRADE``."""
+
+    user_roster: list[RosterPlayerPayload]
+    opponent_roster: list[RosterPlayerPayload]
+    user_gives: list[str] = Field(default_factory=list)
+    user_receives: list[str] = Field(default_factory=list)
+    current_week: int = Field(default=1, ge=1, le=18)
+    opponent_expected_points: Optional[float] = Field(default=None, ge=0)
+
+
+class CalculateFaabBidsPayload(BaseModel):
+    """Payload for ``CALCULATE_FAAB_BIDS``.
+
+    ``free_agents`` and ``all_players`` carry projected totals. When empty the
+    server fills them from its projection pool.
+    """
+
+    free_agents: list[RosterPlayerPayload] = Field(default_factory=list)
+    all_players: list[RosterPlayerPayload] = Field(default_factory=list)
+    current_week: int = Field(default=1, ge=1, le=18)
+    user_budget: float = Field(default=100.0, ge=0)
+    roster_need: dict[str, int] = Field(default_factory=dict)
+    rival_need_by_pos: dict[str, int] = Field(default_factory=dict)
+    rival_faab: list[float] = Field(default_factory=list)
+
+
 __all__ = [
     "DEFAULT_LIMIT",
     "MAX_LIMIT",
@@ -98,4 +149,8 @@ __all__ = [
     "GetRecommendationsPayload",
     "DraftPickMadePayload",
     "ResetDraftPayload",
+    "RosterPlayerPayload",
+    "OptimizeLineupPayload",
+    "EvaluateTradePayload",
+    "CalculateFaabBidsPayload",
 ]

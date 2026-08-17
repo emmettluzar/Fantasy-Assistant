@@ -33,10 +33,18 @@ from typing import Any, Optional
 
 from websockets.asyncio.server import serve
 
+from engine.models import PlayerProjection, Position
+from inseason.optimizer import RosterPlayer as OptimizerRosterPlayer, optimize_lineup
+from inseason.trades import evaluate_trade
+from inseason.waivers import calculate_faab_bids
 from protocol import (
+    CalculateFaabBidsPayload,
     DraftPickMadePayload,
+    EvaluateTradePayload,
     GetRecommendationsPayload,
+    OptimizeLineupPayload,
     ResetDraftPayload,
+    RosterPlayerPayload,
     SyncLeagueConfigPayload,
 )
 from state import DraftState
@@ -53,6 +61,10 @@ TYPE_RECOMMEND = "GET_RECOMMENDATIONS"
 TYPE_RESET = "RESET_DRAFT"
 # Server-push frame type broadcast to other connected clients after a pick.
 TYPE_PICK_UPDATE = "PICK_UPDATE"
+# In-season automation handlers (Phase 5).
+TYPE_OPTIMIZE = "OPTIMIZE_LINEUP"
+TYPE_EVALUATE_TRADE = "EVALUATE_TRADE"
+TYPE_FAAB = "CALCULATE_FAAB_BIDS"
 
 
 def _error(message: str, code: str = "BAD_REQUEST") -> dict:
@@ -214,11 +226,96 @@ class DraftSession:
         self.state.reset(keep_config=reset.keep_config)
         return self.state.snapshot()
 
+    def _handle_optimize_lineup(self, payload: dict) -> dict:
+        req = OptimizeLineupPayload.model_validate(payload)
+        roster = [self._to_optimizer_player(p) for p in req.roster]
+        result = optimize_lineup(self.state.config, roster)
+        return result.to_dict()
+
+    def _handle_evaluate_trade(self, payload: dict) -> dict:
+        req = EvaluateTradePayload.model_validate(payload)
+        user_roster = [self._to_projection(p) for p in req.user_roster]
+        opponent_roster = [self._to_projection(p) for p in req.opponent_roster]
+        result = evaluate_trade(
+            self.state.config,
+            user_roster,
+            opponent_roster,
+            current_week=req.current_week,
+            user_gives=req.user_gives,
+            user_receives=req.user_receives,
+            opponent_expected_points=req.opponent_expected_points,
+        )
+        return result.to_dict()
+
+    def _handle_faab_bids(self, payload: dict) -> dict:
+        req = CalculateFaabBidsPayload.model_validate(payload)
+        free_agents = (
+            [self._to_projection(p) for p in req.free_agents]
+            if req.free_agents
+            else self.state.remaining()
+        )
+        all_players = (
+            [self._to_projection(p) for p in req.all_players]
+            if req.all_players
+            else self.state.pool
+        )
+        bids = calculate_faab_bids(
+            self.state.config,
+            free_agents,
+            all_players,
+            current_week=req.current_week,
+            user_budget=req.user_budget,
+            roster_need=req.roster_need,
+            rival_need_by_pos=req.rival_need_by_pos,
+            rival_faab=req.rival_faab,
+        )
+        return {"bids": [b.to_dict() for b in bids]}
+
+    def _to_projection(self, p: RosterPlayerPayload) -> PlayerProjection:
+        """Resolve a wire roster player into a full :class:`PlayerProjection`."""
+        pooled = self.state._by_id.get(p.player_id)
+        fantasy_points = (
+            p.fantasy_points
+            if p.fantasy_points is not None
+            else (pooled.fantasy_points if pooled else 0.0)
+        )
+        position: Position = p.position if pooled is None else pooled.position
+        return PlayerProjection(
+            player_id=p.player_id,
+            name=p.name or (pooled.name if pooled else p.player_id),
+            position=position,
+            team=p.team or (pooled.team if pooled else ""),
+            fantasy_points=fantasy_points,
+        )
+
+    def _to_optimizer_player(self, p: RosterPlayerPayload) -> OptimizerRosterPlayer:
+        pooled = self.state._by_id.get(p.player_id)
+        fantasy_points = (
+            p.fantasy_points
+            if p.fantasy_points is not None
+            else (pooled.fantasy_points if pooled else 0.0)
+        )
+        position: Position = p.position if pooled is None else pooled.position
+        return OptimizerRosterPlayer(
+            player_id=p.player_id,
+            name=p.name or (pooled.name if pooled else p.player_id),
+            position=position,
+            fantasy_points=fantasy_points,
+            team=p.team or (pooled.team if pooled else ""),
+            injury_tag=p.injury_tag,
+            weather=p.weather,
+            ceiling=p.ceiling,
+            floor=p.floor,
+        )
+
     _HANDLERS = {
         TYPE_SYNC: _handle_sync,
         TYPE_PICK: _handle_pick,
         TYPE_RECOMMEND: _handle_recommend,
         TYPE_RESET: _handle_reset,
+        TYPE_OPTIMIZE: _handle_optimize_lineup,
+        TYPE_EVALUATE_TRADE: _handle_evaluate_trade,
+        TYPE_FAAB: _handle_faab_bids,
     }
 
 

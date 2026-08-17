@@ -11,16 +11,22 @@
 
 import {
   BoardSnapshot,
+  CalculateFaabBidsPayload,
   DraftPickMadePayload,
   Envelope,
+  EvaluateTradePayload,
+  FaabBidsPayload,
   GetRecommendationsPayload,
+  LineupOptimizationPayload,
   MessageType,
+  OptimizeLineupPayload,
   PickAcceptedPayload,
   PickUpdatePayload,
   RecommendationsPayload,
   ResetDraftPayload,
   ResponsePayload,
   SyncLeagueConfigPayload,
+  TradeEvaluationPayload,
 } from "../types/protocol";
 
 export const WS_URL = "ws://127.0.0.1:8080";
@@ -236,5 +242,29 @@ export class IpcClient {
 
   async resetDraft(payload: ResetDraftPayload = {}): Promise<BoardSnapshot> {
     return this.unwrap(this.request<BoardSnapshot>("RESET_DRAFT", payload));
+  }
+
+  async optimizeLineup(
+    payload: OptimizeLineupPayload,
+  ): Promise<LineupOptimizationPayload> {
+    return this.unwrap(
+      this.request<LineupOptimizationPayload>("OPTIMIZE_LINEUP", payload),
+    );
+  }
+
+  async evaluateTrade(
+    payload: EvaluateTradePayload,
+  ): Promise<TradeEvaluationPayload> {
+    return this.unwrap(
+      this.request<TradeEvaluationPayload>("EVALUATE_TRADE", payload),
+    );
+  }
+
+  async calculateFaabBids(
+    payload: CalculateFaabBidsPayload,
+  ): Promise<FaabBidsPayload> {
+    return this.unwrap(
+      this.request<FaabBidsPayload>("CALCULATE_FAAB_BIDS", payload),
+    );
   }
 }

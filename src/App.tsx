@@ -1,5 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  CalendarDays,
+  LayoutDashboard,
   Loader,
   Radio,
   RefreshCw,
@@ -17,6 +19,9 @@ import DraftBoard from "./components/DraftBoard";
 import LeagueConfigModal from "./components/LeagueConfigModal";
 import PlayerList from "./components/PlayerList";
 import RecommendationCard from "./components/RecommendationCard";
+import LineupOptimizerView from "./components/inseason/LineupOptimizerView";
+import TradeAnalyzerView from "./components/inseason/TradeAnalyzerView";
+import WaiverAssistantView from "./components/inseason/WaiverAssistantView";
 import { useDraftStore } from "./store/useDraftStore";
 import { IpcConnectionState } from "./lib/ipcClient";
 
@@ -41,6 +46,7 @@ function App() {
   const resetDraft = useDraftStore((s) => s.resetDraft);
 
   const [configOpen, setConfigOpen] = useState(false);
+  const [tab, setTab] = useState<"draft" | "inseason">("draft");
 
   // Keep the store's WebSocket connection state subscribed for the badge.
   useEffect(() => subscribeConnection(), [subscribeConnection]);
@@ -115,6 +121,30 @@ function App() {
 
       {/* Main */}
       <main className="mx-auto max-w-7xl px-4 py-6">
+        {/* Tab bar */}
+        <div className="mb-6 flex gap-2 rounded-xl border border-white/10 bg-slate-900/50 p-1">
+          <TabButton
+            active={tab === "draft"}
+            onClick={() => setTab("draft")}
+            icon={<LayoutDashboard className="h-4 w-4" />}
+            label="Live Draft Board"
+          />
+          <TabButton
+            active={tab === "inseason"}
+            onClick={() => setTab("inseason")}
+            icon={<CalendarDays className="h-4 w-4" />}
+            label="In-Season Management"
+          />
+        </div>
+
+        {tab === "inseason" ? (
+          <div className="space-y-6">
+            <LineupOptimizerView />
+            <WaiverAssistantView />
+            <TradeAnalyzerView />
+          </div>
+        ) : (
+          <>
         {/* Stat strip */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Stat icon={<Users className="h-4 w-4" />} label="Teams" value={String(teams.length || "—")} />
@@ -219,6 +249,8 @@ function App() {
           </h2>
           <PlayerList />
         </section>
+          </>
+        )}
       </main>
 
       <LeagueConfigModal open={configOpen} onClose={() => setConfigOpen(false)} />
@@ -229,6 +261,30 @@ function App() {
 // ---------------------------------------------------------------------------
 // Small building blocks
 // ---------------------------------------------------------------------------
+
+interface TabButtonProps {
+  active: boolean;
+  onClick: () => void;
+  icon: ReactNode;
+  label: string;
+}
+
+function TabButton({ active, onClick, icon, label }: TabButtonProps) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+        active
+          ? "bg-emerald-500 text-slate-950"
+          : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
 
 interface StatProps {
   icon: ReactNode;

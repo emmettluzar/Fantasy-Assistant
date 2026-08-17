@@ -18,6 +18,9 @@ export type MessageType =
   | "DRAFT_PICK_MADE"
   | "GET_RECOMMENDATIONS"
   | "RESET_DRAFT"
+  | "OPTIMIZE_LINEUP"
+  | "EVALUATE_TRADE"
+  | "CALCULATE_FAAB_BIDS"
   | "RESPONSE"
   | "PICK_UPDATE";
 
@@ -145,6 +148,45 @@ export interface ResetDraftPayload {
 }
 
 // ---------------------------------------------------------------------------
+// In-season automation payloads (Phase 5)
+// ---------------------------------------------------------------------------
+
+export interface RosterPlayerPayload {
+  player_id: string;
+  name?: string;
+  position: Position;
+  fantasy_points?: number;
+  team?: string;
+  injury_tag?: string | null;
+  weather?: string | null;
+  ceiling?: number;
+  floor?: number;
+}
+
+export interface OptimizeLineupPayload {
+  roster: RosterPlayerPayload[];
+}
+
+export interface EvaluateTradePayload {
+  user_roster: RosterPlayerPayload[];
+  opponent_roster: RosterPlayerPayload[];
+  user_gives: string[];
+  user_receives: string[];
+  current_week?: number;
+  opponent_expected_points?: number;
+}
+
+export interface CalculateFaabBidsPayload {
+  free_agents: RosterPlayerPayload[];
+  all_players: RosterPlayerPayload[];
+  current_week?: number;
+  user_budget?: number;
+  roster_need?: Record<Position, number>;
+  rival_need_by_pos?: Record<Position, number>;
+  rival_faab?: number[];
+}
+
+// ---------------------------------------------------------------------------
 // Response payloads
 // ---------------------------------------------------------------------------
 
@@ -221,6 +263,60 @@ export interface PickUpdatePayload {
   baselines: { replacements: Record<Position, number> };
   dvorp_updated: boolean;
   snapshot: BoardSnapshot;
+}
+
+// ---------------------------------------------------------------------------
+// In-season response payloads
+// ---------------------------------------------------------------------------
+
+export interface LineupSlotEntry {
+  slot: string;
+  player_id: string;
+  name: string;
+  position: Position;
+  projected: number;
+  ceiling: number;
+  floor: number;
+  injury_tag: string | null;
+  weather: string | null;
+}
+
+export interface LineupOptimizationPayload {
+  starters: LineupSlotEntry[];
+  bench: LineupSlotEntry[];
+  total_projected: number;
+  total_ceiling: number;
+  total_floor: number;
+  solver_used: string;
+}
+
+export interface TradeEvaluationPayload {
+  pre_trade_utility: number;
+  post_trade_utility: number;
+  delta_utility: number;
+  pre_win_probability: number;
+  post_win_probability: number;
+  delta_win_probability: number;
+  opponent_pre_utility: number;
+  opponent_post_utility: number;
+  opponent_delta_utility: number;
+  recommended: boolean;
+}
+
+export interface FaabBidEntry {
+  player_id: string;
+  name: string;
+  position: Position;
+  ros_projection: number;
+  ros_dvorp: number;
+  replacement: number;
+  recommended_bid: number;
+  user_need_factor: number;
+  rival_pressure: number;
+}
+
+export interface FaabBidsPayload {
+  bids: FaabBidEntry[];
 }
 
 // ---------------------------------------------------------------------------
