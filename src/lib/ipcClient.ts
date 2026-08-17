@@ -26,6 +26,12 @@ export const WS_URL = "ws://127.0.0.1:8080";
 const RECONNECT_MS = 3000;
 const REQUEST_TIMEOUT_MS = 5000;
 
+/** High-level WebSocket lifecycle state exposed to the UI status badge. */
+export type IpcConnectionState = "connecting" | "connected" | "disconnected";
+
+/** Callback invoked whenever the WebSocket connection state changes. */
+export type IpcStateListener = (state: IpcConnectionState) => void;
+
 type PendingResolver = {
   resolve: (value: ResponsePayload<unknown>) => void;
   reject: (reason: Error) => void;
@@ -56,6 +62,29 @@ export class IpcClient {
   private ws: WebSocket | null = null;
   private pending = new Map<string, PendingResolver>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private state: IpcConnectionState = "disconnected";
+  private listeners = new Set<IpcStateListener>();
+
+  /** Current high-level connection state. */
+  getState(): IpcConnectionState {
+    return this.state;
+  }
+
+  /** Subscribe to connection-state changes. Returns an unsubscribe function. */
+  onStateChange(listener: IpcStateListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private setState(next: IpcConnectionState): void {
+    if (this.state === next) return;
+    this.state = next;
+    for (const listener of this.listeners) {
+      listener(next);
+    }
+  }
 
   connect(): void {
     if (
@@ -66,8 +95,13 @@ export class IpcClient {
       return;
     }
 
+    this.setState("connecting");
     const ws = new WebSocket(WS_URL);
     this.ws = ws;
+
+    ws.onopen = () => {
+      this.setState("connected");
+    };
 
     ws.onmessage = (event: MessageEvent) => {
       let envelope: Envelope;
@@ -86,6 +120,7 @@ export class IpcClient {
 
     ws.onclose = () => {
       this.ws = null;
+      this.setState("disconnected");
       this.rejectPending(new IpcError("socket closed before response", "WS_CLOSED"));
       this.scheduleReconnect();
     };

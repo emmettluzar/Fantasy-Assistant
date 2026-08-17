@@ -155,6 +155,11 @@ export interface Recommendation {
   adp: number | null;
   bye_week: number;
   fantasy_points: number;
+  /** Expected fantasy points (opportunity-based). Optional until the engine
+   *  emits it on the recommendation payload. */
+  xfp?: number | null;
+  /** Weighted Opportunity Rating. Optional until the engine emits it. */
+  wopr?: number | null;
   dvorp: number;
   p_mb: number;
   r_need: number;
@@ -230,4 +235,49 @@ export interface EngineStatus {
   healthy: boolean;
   pid: number | null;
   wsUrl: string;
+}
+
+// ---------------------------------------------------------------------------
+// UI layer types (normalized, camelCase records used by React components)
+// ---------------------------------------------------------------------------
+
+/** Seasonal format selector surfaced through the league configuration modal. */
+export type DraftFormat = "redraft" | "dynasty";
+
+/** Scoring preset selector surfaced through the league configuration modal. */
+export type ScoringFormat = "standard" | "half-ppr" | "full-ppr";
+
+/** A drafting team, derived from `LeagueConfig.teams_count`. */
+export interface Team {
+  index: number;
+  name: string;
+}
+
+/** Compact player metadata kept in the store's name lookup index. */
+export interface PlayerIndexEntry {
+  name: string;
+  position: Position;
+  team: string;
+}
+
+/**
+ * Enriched player record shown in the available player pool and player list.
+ *
+ * Built by normalizing a `Recommendation`. The dynamic replacement value is
+ * derived directly from the DVORP identity `fantasy_points - dvorp`.
+ */
+export interface Player {
+  playerId: string;
+  name: string;
+  position: Position;
+  team: string;
+  adp: number | null;
+  byeWeek: number;
+  fantasyPoints: number;
+  xfp: number | null;
+  wopr: number | null;
+  dvorp: number;
+  replacementValue: number;
+  pMb: number;
+  utility: number;
 }

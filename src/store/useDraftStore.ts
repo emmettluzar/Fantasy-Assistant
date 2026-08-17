@@ -7,52 +7,168 @@
  * - mirror live draft state using the WebSocket IPC client.
  * - expose typed actions for SYNC_LEAGUE_CONFIG, DRAFT_PICK_MADE,
  *   GET_RECOMMENDATIONS, and RESET_DRAFT.
+ * - derive the normalized UI layer state (teams, draft grid picks, available
+ *   player pool, player name index) consumed by the React components.
  */
 
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 
-import { IpcClient } from "../lib/ipcClient";
+import {
+  IpcClient,
+  IpcConnectionState,
+  IpcError,
+} from "../lib/ipcClient";
 import {
   BoardSnapshot,
   DraftPickMadePayload,
   EngineStatus,
   GetRecommendationsPayload,
   LeagueConfig,
+  DEFAULT_LEAGUE_CONFIG,
+  Player,
+  PlayerIndexEntry,
+  Position,
   Recommendation,
   ResetDraftPayload,
+  SnapshotPick,
   SyncLeagueConfigPayload,
+  Team,
 } from "../types/protocol";
 
 const ipc = new IpcClient();
 
+/** Normalized draft pick consumed by the draft board grid. */
+export interface DraftPickRow {
+  pickNumber: number;
+  round: number;
+  teamIndex: number;
+  playerId: string;
+  playerName: string;
+  position: Position;
+  fantasyPoints: number;
+}
+
+/** Normalize a wire `Recommendation` into the UI `Player` record. */
+function toPlayer(rec: Recommendation): Player {
+  return {
+    playerId: rec.player_id,
+    name: rec.name,
+    position: rec.position,
+    team: rec.team,
+    adp: rec.adp,
+    byeWeek: rec.bye_week,
+    fantasyPoints: rec.fantasy_points,
+    xfp: rec.xfp ?? null,
+    wopr: rec.wopr ?? null,
+    dvorp: rec.dvorp,
+    replacementValue: rec.fantasy_points - rec.dvorp,
+    pMb: rec.p_mb,
+    utility: rec.utility,
+  };
+}
+
+/** Derive the ordered team list from the configured team count. */
+function buildTeams(teamCount: number): Team[] {
+  return Array.from({ length: teamCount }, (_, index) => ({
+    index,
+    name: `Team ${index + 1}`,
+  }));
+}
+
 interface DraftStore {
+  // -------------------------------------------------------------------------
   // Engine lifecycle
+  // -------------------------------------------------------------------------
   engine: EngineStatus | null;
   startEngine: () => Promise<void>;
   stopEngine: () => Promise<void>;
   refreshEngineStatus: () => Promise<void>;
 
-  // Live draft state
-  config: LeagueConfig | null;
-  recommendations: Recommendation[];
+  // -------------------------------------------------------------------------
+  // WebSocket sync state
+  // -------------------------------------------------------------------------
+  connection: IpcConnectionState;
+  subscribeConnection: () => () => void;
+
+  // -------------------------------------------------------------------------
+  // League + draft board state
+  // -------------------------------------------------------------------------
+  config: LeagueConfig;
+  teams: Team[];
+  userTeamIndex: number;
+  picks: DraftPickRow[];
+  draftedCount: number;
   availableCount: number;
+  rNext: number;
+
+  // -------------------------------------------------------------------------
+  // Available player pool + recommendations
+  // -------------------------------------------------------------------------
+  playerPool: Player[];
+  playerIndex: Record<string, PlayerIndexEntry>;
+  recommendations: Recommendation[];
   loading: boolean;
   error: string | null;
 
+  // -------------------------------------------------------------------------
+  // Actions
+  // -------------------------------------------------------------------------
   syncLeagueConfig: (payload: SyncLeagueConfigPayload) => Promise<void>;
   getRecommendations: (payload?: GetRecommendationsPayload) => Promise<void>;
   draftPickMade: (payload: DraftPickMadePayload) => Promise<void>;
   resetDraft: (payload?: ResetDraftPayload) => Promise<void>;
 }
 
-export const useDraftStore = create<DraftStore>((set) => ({
+/** Helper to surface an error message while preserving the IPC error code when available. */
+function errorMessage(err: unknown): string {
+  if (err instanceof IpcError) return err.message;
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+/**
+ * Apply a `BoardSnapshot` from SYNC_LEAGUE_CONFIG / RESET_DRAFT into store
+ * state without overwriting any existing player pool (which requires a
+ * subsequent GET_RECOMMENDATIONS call to populate).
+ */
+function applySnapshot(
+  snapshot: BoardSnapshot,
+): Partial<DraftStore> {
+  return {
+    config: snapshot.config,
+    teams: buildTeams(snapshot.config.teams_count),
+    userTeamIndex: snapshot.user_team_index,
+    draftedCount: snapshot.drafted_count,
+    availableCount: snapshot.available_count,
+    picks: snapshot.picks.map((p: SnapshotPick) => ({
+      pickNumber: p.pick_number,
+      round: p.round,
+      teamIndex: p.team_index,
+      playerId: p.player_id,
+      playerName: p.player_id,
+      position: p.position,
+      fantasyPoints: p.fantasy_points,
+    })),
+  };
+}
+
+export const useDraftStore = create<DraftStore>((set, get) => ({
   engine: null,
-  config: null,
-  recommendations: [],
+  config: DEFAULT_LEAGUE_CONFIG,
+  teams: [],
+  userTeamIndex: 0,
+  picks: [],
+  draftedCount: 0,
   availableCount: 0,
+  rNext: 0,
+
+  playerPool: [],
+  playerIndex: {},
+  recommendations: [],
   loading: false,
   error: null,
+  connection: ipc.getState(),
 
   // -------------------------------------------------------------------------
   // Engine lifecycle
@@ -73,6 +189,18 @@ export const useDraftStore = create<DraftStore>((set) => ({
   },
 
   // -------------------------------------------------------------------------
+  // WebSocket sync state
+  // -------------------------------------------------------------------------
+  subscribeConnection: () => {
+    const unsubscribe = ipc.onStateChange((connection) => {
+      set({ connection });
+    });
+    // Immediately reconcile in case the state changed before subscription.
+    set({ connection: ipc.getState() });
+    return unsubscribe;
+  },
+
+  // -------------------------------------------------------------------------
   // Live draft state
   // -------------------------------------------------------------------------
   syncLeagueConfig: async (payload) => {
@@ -80,12 +208,16 @@ export const useDraftStore = create<DraftStore>((set) => ({
     try {
       const snapshot: BoardSnapshot = await ipc.syncLeagueConfig(payload);
       set({
-        config: snapshot.config,
-        availableCount: snapshot.available_count,
+        ...applySnapshot(snapshot),
+        recommendations: [],
+        playerPool: [],
+        playerIndex: {},
         loading: false,
       });
+      // Populate recommendations now that the board is configured.
+      await get().getRecommendations();
     } catch (err) {
-      set({ error: (err as Error).message, loading: false });
+      set({ error: errorMessage(err), loading: false });
     }
   },
 
@@ -93,23 +225,79 @@ export const useDraftStore = create<DraftStore>((set) => ({
     set({ loading: true, error: null });
     try {
       const result = await ipc.getRecommendations(payload);
+
+      const pool: Player[] = [];
+      const index: Record<string, PlayerIndexEntry> = {};
+      for (const rec of result.recommendations) {
+        pool.push(toPlayer(rec));
+        index[rec.player_id] = {
+          name: rec.name,
+          position: rec.position,
+          team: rec.team,
+        };
+      }
+
       set({
         recommendations: result.recommendations,
+        playerPool: pool,
+        playerIndex: index,
         availableCount: result.available_count,
+        rNext: result.r_next,
+        userTeamIndex: result.user_team_index,
         loading: false,
       });
     } catch (err) {
-      set({ error: (err as Error).message, loading: false });
+      set({ error: errorMessage(err), loading: false });
     }
   },
 
   draftPickMade: async (payload) => {
     set({ error: null });
     try {
-      const result = await ipc.draftPickMade(payload);
-      set({ availableCount: result.available_count });
+      // First renew the recommendations with the pick already ingested by the
+      // server; this also returns fresh user_team_index / r_next.
+      await ipc.draftPickMade(payload);
+
+      const result = await ipc.getRecommendations({});
+
+      const { playerIndex, picks } = get();
+      const pool: Player[] = [];
+      const index: Record<string, PlayerIndexEntry> = { ...playerIndex };
+      for (const rec of result.recommendations) {
+        pool.push(toPlayer(rec));
+        index[rec.player_id] = {
+          name: rec.name,
+          position: rec.position,
+          team: rec.team,
+        };
+      }
+
+      const playerName = index[payload.player_id]?.name ?? payload.player_id;
+      const nextPickNumber =
+        picks.length > 0 ? Math.max(...picks.map((p) => p.pickNumber)) + 1 : 1;
+
+      const newPick: DraftPickRow = {
+        pickNumber: payload.pick_number ?? nextPickNumber,
+        round: payload.round,
+        teamIndex: payload.team_index,
+        playerId: payload.player_id,
+        playerName,
+        position: index[payload.player_id]?.position ?? payload.position ?? "RB",
+        fantasyPoints: payload.fantasy_points ?? 0,
+      };
+
+      set({
+        recommendations: result.recommendations,
+        playerPool: pool,
+        playerIndex: index,
+        availableCount: result.available_count,
+        rNext: result.r_next,
+        userTeamIndex: result.user_team_index,
+        picks: [...picks, newPick],
+        draftedCount: picks.length + 1,
+      });
     } catch (err) {
-      set({ error: (err as Error).message });
+      set({ error: errorMessage(err) });
     }
   },
 
@@ -118,13 +306,16 @@ export const useDraftStore = create<DraftStore>((set) => ({
     try {
       const snapshot: BoardSnapshot = await ipc.resetDraft(payload);
       set({
-        config: snapshot.config,
+        ...applySnapshot(snapshot),
         recommendations: [],
-        availableCount: snapshot.available_count,
+        playerPool: [],
+        playerIndex: {},
+        rNext: 0,
         loading: false,
       });
+      await get().getRecommendations();
     } catch (err) {
-      set({ error: (err as Error).message, loading: false });
+      set({ error: errorMessage(err), loading: false });
     }
   },
 }));

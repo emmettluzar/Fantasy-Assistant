@@ -1,0 +1,17 @@
+# Python virtual environment & cache
+src-python/venv/
+__pycache__/
+*.pyc
+
+# Node packages & build
+node_modules/
+dist/
+dist-ssr/
+
+# Rust/Tauri build artifacts
+src-tauri/target/
+
+# Large git/cache
+.git/
+fantasy_cache.db
+*.log
