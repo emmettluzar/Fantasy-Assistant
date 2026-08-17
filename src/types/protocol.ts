@@ -15,6 +15,7 @@
 
 export type MessageType =
   | "SYNC_LEAGUE_CONFIG"
+  | "SYNC_PLATFORM_LEAGUE"
   | "DRAFT_PICK_MADE"
   | "GET_RECOMMENDATIONS"
   | "RESET_DRAFT"
@@ -145,6 +146,46 @@ export interface DraftPickMadePayload {
 
 export interface ResetDraftPayload {
   keep_config?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Platform league connection (Phase: Connect League)
+// ---------------------------------------------------------------------------
+
+export type PlatformName = "sleeper" | "espn" | "yahoo";
+
+export interface SyncPlatformLeaguePayload {
+  platform: PlatformName;
+  league_id?: string;
+  // Sleeper
+  draft_id?: string;
+  username?: string;
+  user_team_index?: number;
+  // ESPN
+  year?: number;
+  espn_s2?: string;
+  swid?: string;
+  // Yahoo
+  oauth_key?: string;
+  allow_network?: boolean;
+}
+
+export interface PlatformRosterPlayer {
+  player_id: string;
+  name?: string | null;
+  position?: string | null;
+}
+
+export interface PlatformRoster {
+  team_index: number;
+  team_name: string;
+  players: PlatformRosterPlayer[];
+}
+
+export interface SyncPlatformLeagueResponse {
+  config: LeagueConfig;
+  user_team_index: number;
+  rosters: PlatformRoster[];
 }
 
 // ---------------------------------------------------------------------------

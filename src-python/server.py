@@ -33,7 +33,7 @@ from typing import Any, Optional
 
 from websockets.asyncio.server import serve
 
-from engine.models import PlayerProjection, Position
+from engine.models import LeagueConfig, PlayerProjection, Position
 from inseason.optimizer import RosterPlayer as OptimizerRosterPlayer, optimize_lineup
 from inseason.trades import evaluate_trade
 from inseason.waivers import calculate_faab_bids
@@ -46,6 +46,7 @@ from protocol import (
     ResetDraftPayload,
     RosterPlayerPayload,
     SyncLeagueConfigPayload,
+    SyncPlatformLeaguePayload,
 )
 from state import DraftState
 
@@ -65,10 +66,22 @@ TYPE_PICK_UPDATE = "PICK_UPDATE"
 TYPE_OPTIMIZE = "OPTIMIZE_LINEUP"
 TYPE_EVALUATE_TRADE = "EVALUATE_TRADE"
 TYPE_FAAB = "CALCULATE_FAAB_BIDS"
+# Platform league connection + ingestion.
+TYPE_SYNC_PLATFORM = "SYNC_PLATFORM_LEAGUE"
 
 
 def _error(message: str, code: str = "BAD_REQUEST") -> dict:
     return {"ok": False, "error": message, "code": code}
+
+
+def _coerce_league_id(raw: Optional[str], platform_label: str) -> int:
+    """Coerce a wire league_id into an integer, raising a friendly error."""
+    if not raw:
+        raise ValueError(f"{platform_label} sync requires a league_id")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{platform_label} league_id must be an integer") from None
 
 
 def _response(request_id: Optional[str], data: Any) -> str:
@@ -271,6 +284,76 @@ class DraftSession:
         )
         return {"bids": [b.to_dict() for b in bids]}
 
+    def _handle_sync_platform(self, payload: dict) -> dict:
+        """Ingest a connected platform league and apply it to the board.
+
+        Invokes the matching adapter, normalizes its league rules and rosters,
+        applies the resulting :class:`LeagueConfig` to the live
+        :class:`DraftState`, and returns the populated config + roster payload.
+        """
+        req = SyncPlatformLeaguePayload.model_validate(payload)
+        config_dict, rosters, user_team_index = self._ingest_platform_league(req)
+        config = LeagueConfig(**config_dict)
+        self.state.sync_config(
+            config=config,
+            user_team_index=user_team_index,
+            allow_network=req.allow_network,
+        )
+        return {
+            "config": config.model_dump(),
+            "user_team_index": user_team_index,
+            "rosters": rosters,
+        }
+
+    def _ingest_platform_league(
+        self, req: SyncPlatformLeaguePayload
+    ) -> tuple[dict, list[dict], int]:
+        """Fetch league rules + rosters from the selected platform adapter."""
+        platform = req.platform
+
+        if platform == "sleeper":
+            from integrations.sleeper import SleeperAdapter
+
+            adapter = SleeperAdapter(
+                draft_id=req.draft_id,
+                league_id=req.league_id,
+            )
+            rosters = adapter.fetch_normalized_rosters()
+            return adapter.to_league_config(), rosters, req.user_team_index
+
+        if platform == "espn":
+            from integrations.espn import EspnAdapter
+
+            league_id = _coerce_league_id(req.league_id, "ESPN")
+            adapter = EspnAdapter(
+                league_id=league_id,
+                year=req.year,
+                swid=req.swid,
+                espn_s2=req.espn_s2,
+            )
+            return (
+                adapter.to_league_config(),
+                adapter.fetch_rosters(),
+                req.user_team_index,
+            )
+
+        if platform == "yahoo":
+            import os
+
+            from integrations.yahoo import YahooAdapter
+
+            league_id = _coerce_league_id(req.league_id, "Yahoo")
+            if req.oauth_key:
+                os.environ["YFPY_OAUTH_KEY"] = req.oauth_key
+            adapter = YahooAdapter(league_id=league_id)
+            return (
+                adapter.to_league_config(),
+                adapter.fetch_rosters(),
+                req.user_team_index,
+            )
+
+        raise ValueError(f"unsupported platform: {platform}")
+
     def _to_projection(self, p: RosterPlayerPayload) -> PlayerProjection:
         """Resolve a wire roster player into a full :class:`PlayerProjection`."""
         pooled = self.state._by_id.get(p.player_id)
@@ -316,6 +399,7 @@ class DraftSession:
         TYPE_OPTIMIZE: _handle_optimize_lineup,
         TYPE_EVALUATE_TRADE: _handle_evaluate_trade,
         TYPE_FAAB: _handle_faab_bids,
+        TYPE_SYNC_PLATFORM: _handle_sync_platform,
     }
 
 

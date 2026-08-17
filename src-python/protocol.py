@@ -53,6 +53,50 @@ class SyncLeagueConfigPayload(LeagueConfig):
         )
 
 
+class PlatformRosterPlayer(BaseModel):
+    """A rostered player returned by a platform adapter during league sync.
+
+    ``position`` is intentionally a free-form string rather than the engine's
+    ``Position`` literal: adapters may emit non-skill codes (``BENCH``,
+    ``SUPERFLEX``, ...) that the engine does not model.
+    """
+
+    player_id: str
+    name: Optional[str] = None
+    position: Optional[str] = None
+
+
+class PlatformRoster(BaseModel):
+    """A single team's roster keyed by a stable 0-based ``team_index``."""
+
+    team_index: int = Field(ge=0)
+    team_name: str = ""
+    players: list[PlatformRosterPlayer] = Field(default_factory=list)
+
+
+class SyncPlatformLeaguePayload(BaseModel):
+    """Payload for ``SYNC_PLATFORM_LEAGUE``.
+
+    ``platform`` selects the adapter; the remaining fields are adapter-specific
+    credentials/locators. ``user_team_index`` is only honored for platforms that
+    resolve a user-owned team during sync (Sleeper); otherwise it defaults to 0.
+    """
+
+    platform: str = Field(pattern="^(sleeper|espn|yahoo)$")
+    league_id: Optional[str] = None
+    # Sleeper
+    draft_id: Optional[str] = None
+    username: Optional[str] = None
+    user_team_index: int = Field(default=0, ge=0)
+    # ESPN
+    year: Optional[int] = None
+    espn_s2: Optional[str] = None
+    swid: Optional[str] = None
+    # Yahoo
+    oauth_key: Optional[str] = None
+    allow_network: bool = Field(default=False)
+
+
 class GetRecommendationsPayload(BaseModel):
     """Payload for ``GET_RECOMMENDATIONS``.
 
@@ -153,4 +197,7 @@ __all__ = [
     "OptimizeLineupPayload",
     "EvaluateTradePayload",
     "CalculateFaabBidsPayload",
+    "SyncPlatformLeaguePayload",
+    "PlatformRoster",
+    "PlatformRosterPlayer",
 ]

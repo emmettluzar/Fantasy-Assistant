@@ -70,8 +70,15 @@ _SLOT_MAP: dict[str, str] = {
 class SleeperAdapter:
     """REST + WebSocket ingestion for a single Sleeper draft."""
 
-    def __init__(self, draft_id: str, *, api_url: str = SLEEPER_API) -> None:
+    def __init__(
+        self,
+        draft_id: Optional[str] = None,
+        *,
+        league_id: Optional[str] = None,
+        api_url: str = SLEEPER_API,
+    ) -> None:
         self.draft_id = draft_id
+        self.league_id = str(league_id) if league_id else None
         self.api_url = api_url.rstrip("/")
         self.normalizer = PlayerNormalizer()
         self._draft: Optional[dict[str, Any]] = None
@@ -99,24 +106,31 @@ class SleeperAdapter:
             self._ingest_slot_mapping()
         return self._draft
 
+    def _resolve_league_id(self) -> str:
+        """Return the league id, deriving it from the draft when not provided.
+
+        League-only sync (``SYNC_PLATFORM_LEAGUE``) supplies ``league_id``
+        directly; draft streaming derives it from the draft object.
+        """
+        if self.league_id:
+            return self.league_id
+        draft = self.fetch_draft()
+        league_id = draft.get("league_id")
+        if not league_id:
+            raise ValueError("Sleeper draft is missing a league_id")
+        self.league_id = str(league_id)
+        return self.league_id
+
     def fetch_league(self) -> dict[str, Any]:
         """Fetch and cache the league settings object."""
         if self._league is None:
-            draft = self.fetch_draft()
-            league_id = draft.get("league_id")
-            if not league_id:
-                raise ValueError("Sleeper draft is missing a league_id")
-            self._league = dict(self._get(f"/league/{league_id}") or {})
+            self._league = dict(self._get(f"/league/{self._resolve_league_id()}") or {})
         return self._league
 
     def fetch_rosters(self) -> list[dict[str, Any]]:
         """Fetch and cache league rosters for team-index resolution."""
         if self._rosters is None:
-            draft = self.fetch_draft()
-            league_id = draft.get("league_id")
-            if not league_id:
-                raise ValueError("Sleeper draft is missing a league_id")
-            data = self._get(f"/league/{league_id}/rosters")
+            data = self._get(f"/league/{self._resolve_league_id()}/rosters")
             self._rosters = [dict(r) for r in (data or []) if isinstance(r, dict)]
         return self._rosters
 
@@ -215,6 +229,7 @@ class SleeperAdapter:
     def to_league_config(self) -> dict[str, Any]:
         """Map Sleeper league settings to the engine ``LeagueConfig`` schema."""
         league = self.fetch_league()
+        self.fetch_rosters()  # ensure teams_count can be derived from rosters
         settings = dict(league.get("settings") or league.get("scoring_settings") or {})
 
         scoring: dict[str, float] = {
@@ -264,6 +279,33 @@ class SleeperAdapter:
             "roster_slots": roster_slots,
             "teams_count": teams_count,
         }
+
+    def fetch_normalized_rosters(self) -> list[dict[str, Any]]:
+        """Return normalized ``{team_index, team_name, players}`` rosters.
+
+        Used by ``SYNC_PLATFORM_LEAGUE`` so the UI can persist real team names
+        and roster contents without an additional platform-specific mapping.
+        Player name/position is left ``None`` here because Sleeper rosters only
+        carry player IDs; resolving names requires the (large) player index.
+        """
+        self.fetch_rosters()
+        rosters: list[dict[str, Any]] = []
+        for index, roster in enumerate(self._rosters or []):
+            metadata = roster.get("metadata") or {}
+            name = (
+                metadata.get("team_name")
+                or roster.get("display_name")
+                or roster.get("owner_id")
+                or f"Team {index + 1}"
+            )
+            players = [
+                {"player_id": str(pid), "name": None, "position": None}
+                for pid in (roster.get("players") or [])
+            ]
+            rosters.append(
+                {"team_index": index, "team_name": str(name), "players": players}
+            )
+        return rosters
 
     # ------------------------------------------------------------------
     # Live stream

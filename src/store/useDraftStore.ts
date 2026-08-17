@@ -27,6 +27,7 @@ import {
   LeagueConfig,
   DEFAULT_LEAGUE_CONFIG,
   PickUpdatePayload,
+  PlatformRoster,
   Player,
   PlayerIndexEntry,
   Position,
@@ -34,6 +35,7 @@ import {
   ResetDraftPayload,
   SnapshotPick,
   SyncLeagueConfigPayload,
+  SyncPlatformLeaguePayload,
   Team,
 } from "../types/protocol";
 
@@ -77,6 +79,21 @@ function buildTeams(teamCount: number): Team[] {
   }));
 }
 
+/** Derive the team list, prefering real platform roster names when present. */
+function buildTeamsFromRosters(
+  teamCount: number,
+  rosters: PlatformRoster[] = [],
+): Team[] {
+  const byIndex = new Map<number, string>();
+  for (const roster of rosters) {
+    if (roster.team_name) byIndex.set(roster.team_index, roster.team_name);
+  }
+  return Array.from({ length: teamCount }, (_, index) => ({
+    index,
+    name: byIndex.get(index) ?? `Team ${index + 1}`,
+  }));
+}
+
 interface DraftStore {
   // -------------------------------------------------------------------------
   // Engine lifecycle
@@ -103,6 +120,7 @@ interface DraftStore {
   draftedCount: number;
   availableCount: number;
   rNext: number;
+  platformRosters: PlatformRoster[];
 
   // -------------------------------------------------------------------------
   // Available player pool + recommendations
@@ -117,6 +135,7 @@ interface DraftStore {
   // Actions
   // -------------------------------------------------------------------------
   syncLeagueConfig: (payload: SyncLeagueConfigPayload) => Promise<void>;
+  syncPlatformLeague: (payload: SyncPlatformLeaguePayload) => Promise<void>;
   getRecommendations: (payload?: GetRecommendationsPayload) => Promise<void>;
   draftPickMade: (payload: DraftPickMadePayload) => Promise<void>;
   resetDraft: (payload?: ResetDraftPayload) => Promise<void>;
@@ -200,6 +219,7 @@ export const useDraftStore = create<DraftStore>((set, get) => {
   draftedCount: 0,
   availableCount: 0,
   rNext: 0,
+  platformRosters: [],
 
   playerPool: [],
   playerIndex: {},
@@ -260,6 +280,31 @@ export const useDraftStore = create<DraftStore>((set, get) => {
         loading: false,
       });
       // Populate recommendations now that the board is configured.
+      await get().getRecommendations();
+    } catch (err) {
+      set({ error: errorMessage(err), loading: false });
+    }
+  },
+
+  syncPlatformLeague: async (payload) => {
+    set({ loading: true, error: null });
+    try {
+      const result = await ipc.syncPlatformLeague(payload);
+      set({
+        config: result.config,
+        teams: buildTeamsFromRosters(result.config.teams_count, result.rosters),
+        userTeamIndex: result.user_team_index,
+        platformRosters: result.rosters,
+        picks: [],
+        draftedCount: 0,
+        availableCount: 0,
+        rNext: 0,
+        recommendations: [],
+        playerPool: [],
+        playerIndex: {},
+        loading: false,
+      });
+      // Populate recommendations now that the league is configured.
       await get().getRecommendations();
     } catch (err) {
       set({ error: errorMessage(err), loading: false });

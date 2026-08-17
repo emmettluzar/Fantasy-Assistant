@@ -26,6 +26,8 @@ import {
   ResetDraftPayload,
   ResponsePayload,
   SyncLeagueConfigPayload,
+  SyncPlatformLeaguePayload,
+  SyncPlatformLeagueResponse,
   TradeEvaluationPayload,
 } from "../types/protocol";
 
@@ -242,6 +244,14 @@ export class IpcClient {
 
   async resetDraft(payload: ResetDraftPayload = {}): Promise<BoardSnapshot> {
     return this.unwrap(this.request<BoardSnapshot>("RESET_DRAFT", payload));
+  }
+
+  async syncPlatformLeague(
+    payload: SyncPlatformLeaguePayload,
+  ): Promise<SyncPlatformLeagueResponse> {
+    return this.unwrap(
+      this.request<SyncPlatformLeagueResponse>("SYNC_PLATFORM_LEAGUE", payload),
+    );
   }
 
   async optimizeLineup(

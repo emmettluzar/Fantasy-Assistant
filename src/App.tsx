@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   CalendarDays,
   LayoutDashboard,
+  Link2,
   Loader,
   Radio,
   RefreshCw,
@@ -15,6 +16,7 @@ import {
   Zap,
 } from "lucide-react";
 
+import ConnectLeagueModal from "./components/ConnectLeagueModal";
 import DraftBoard from "./components/DraftBoard";
 import LeagueConfigModal from "./components/LeagueConfigModal";
 import PlayerList from "./components/PlayerList";
@@ -46,6 +48,7 @@ function App() {
   const resetDraft = useDraftStore((s) => s.resetDraft);
 
   const [configOpen, setConfigOpen] = useState(false);
+  const [connectOpen, setConnectOpen] = useState(false);
   const [tab, setTab] = useState<"draft" | "inseason">("draft");
 
   // Keep the store's WebSocket connection state subscribed for the badge.
@@ -106,6 +109,15 @@ function App() {
                 <span>Start</span>
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={() => setConnectOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:bg-white/5"
+            >
+              <Link2 className="h-4 w-4" />
+              <span>Connect Platform</span>
+            </button>
 
             <button
               type="button"
@@ -254,6 +266,7 @@ function App() {
       </main>
 
       <LeagueConfigModal open={configOpen} onClose={() => setConfigOpen(false)} />
+      <ConnectLeagueModal open={connectOpen} onClose={() => setConnectOpen(false)} />
     </div>
   );
 }
