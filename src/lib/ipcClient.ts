@@ -16,6 +16,7 @@ import {
   GetRecommendationsPayload,
   MessageType,
   PickAcceptedPayload,
+  PickUpdatePayload,
   RecommendationsPayload,
   ResetDraftPayload,
   ResponsePayload,
@@ -31,6 +32,9 @@ export type IpcConnectionState = "connecting" | "connected" | "disconnected";
 
 /** Callback invoked whenever the WebSocket connection state changes. */
 export type IpcStateListener = (state: IpcConnectionState) => void;
+
+/** Callback invoked when the server pushes a live ``PICK_UPDATE`` frame. */
+export type PickUpdateListener = (update: PickUpdatePayload) => void;
 
 type PendingResolver = {
   resolve: (value: ResponsePayload<unknown>) => void;
@@ -64,6 +68,7 @@ export class IpcClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private state: IpcConnectionState = "disconnected";
   private listeners = new Set<IpcStateListener>();
+  private pickListeners = new Set<PickUpdateListener>();
 
   /** Current high-level connection state. */
   getState(): IpcConnectionState {
@@ -75,6 +80,14 @@ export class IpcClient {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
+    };
+  }
+
+  /** Subscribe to live ``PICK_UPDATE`` pushes. Returns an unsubscribe function. */
+  onPickUpdate(listener: PickUpdateListener): () => void {
+    this.pickListeners.add(listener);
+    return () => {
+      this.pickListeners.delete(listener);
     };
   }
 
@@ -110,6 +123,17 @@ export class IpcClient {
       } catch {
         return;
       }
+
+      // Server-push used when a platform adapter or the browser extension
+      // ingests a pick on a *different* socket: fan it out to UI subscribers.
+      if (envelope.type === "PICK_UPDATE") {
+        const payload = envelope.payload as PickUpdatePayload;
+        for (const listener of this.pickListeners) {
+          listener(payload);
+        }
+        return;
+      }
+
       if (envelope.type !== "RESPONSE") return;
       const resolver = this.pending.get(envelope.request_id ?? "");
       if (resolver) {

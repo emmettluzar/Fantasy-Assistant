@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Fantasy Draft Assistant Sync",
+  "version": "0.1.0",
+  "description": "Streams live ESPN/Yahoo/Sleeper draft picks to the local Fantasy Draft Assistant desktop engine over ws://127.0.0.1:8080.",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": [
+    "http://127.0.0.1:8080/*",
+    "*://fantasy.espn.com/*",
+    "*://football.fantasysports.yahoo.com/*",
+    "*://sleeper.app/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://fantasy.espn.com/*",
+        "*://football.fantasysports.yahoo.com/*",
+        "*://sleeper.app/*"
+      ],
+      "js": ["content_script.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["interceptor.js"],
+      "matches": [
+        "*://fantasy.espn.com/*",
+        "*://football.fantasysports.yahoo.com/*"
+      ]
+    }
+  ]
+}

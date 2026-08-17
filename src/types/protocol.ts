@@ -18,7 +18,8 @@ export type MessageType =
   | "DRAFT_PICK_MADE"
   | "GET_RECOMMENDATIONS"
   | "RESET_DRAFT"
-  | "RESPONSE";
+  | "RESPONSE"
+  | "PICK_UPDATE";
 
 export type Position = "QB" | "RB" | "WR" | "TE" | "K" | "DST";
 
@@ -207,6 +208,19 @@ export interface BoardSnapshot {
   available_count: number;
   picks: SnapshotPick[];
   user_owned: Record<Position, number>;
+}
+
+/**
+ * Server-push payload broadcast to every other connected client after a pick
+ * is ingested. The extension streams picks over one socket; the desktop board
+ * receives this over its own socket and applies the change instantly.
+ */
+export interface PickUpdatePayload {
+  pick: PickEcho;
+  available_count: number;
+  baselines: { replacements: Record<Position, number> };
+  dvorp_updated: boolean;
+  snapshot: BoardSnapshot;
 }
 
 // ---------------------------------------------------------------------------

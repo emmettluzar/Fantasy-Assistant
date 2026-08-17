@@ -7,6 +7,9 @@ four message types:
 * ``DRAFT_PICK_MADE``   -- ingests a pick, then returns refreshed baselines.
 * ``GET_RECOMMENDATIONS`` -- returns the top available players by ``U_i(t)``.
 * ``RESET_DRAFT``       -- clears the live draft board.
+* ``PICK_UPDATE``       -- server-push broadcast to every other connected
+  client after a pick is ingested (so a browser-extension pick instantly
+  refreshes the desktop board).
 
 The server only uses the standard library plus the ``websockets`` package, so
 it runs inside the same isolated virtual environment that powers the engine.
@@ -48,6 +51,8 @@ TYPE_SYNC = "SYNC_LEAGUE_CONFIG"
 TYPE_PICK = "DRAFT_PICK_MADE"
 TYPE_RECOMMEND = "GET_RECOMMENDATIONS"
 TYPE_RESET = "RESET_DRAFT"
+# Server-push frame type broadcast to other connected clients after a pick.
+TYPE_PICK_UPDATE = "PICK_UPDATE"
 
 
 def _error(message: str, code: str = "BAD_REQUEST") -> dict:
@@ -75,41 +80,97 @@ class DraftSession:
 
     def __init__(self) -> None:
         self.state = DraftState()
+        # Connected clients, used to fan out PICK_UPDATE broadcasts. The asyncio
+        # handlers run cooperatively on one thread, so the set needs no lock.
+        self.clients: set = set()
 
     def handle(self, message: str) -> str:
-        """Dispatch one inbound frame and return the outbound JSON text."""
+        """Dispatch one inbound frame and return the outbound JSON response.
+
+        Broadcast frames are computed but not transmitted here; the async
+        connection loop uses :meth:`handle_frame` instead so it can fan them
+        out to every other connected client.
+        """
+        response, _ = self.handle_frame(message)
+        return response
+
+    def handle_frame(self, message: str) -> tuple[str, list[str]]:
+        """Dispatch a frame; return ``(response_text, broadcast_frames)``."""
         try:
             frame = json.loads(message)
         except json.JSONDecodeError as exc:
-            return _response(None, _error(f"invalid JSON: {exc}"))
+            return _response(None, _error(f"invalid JSON: {exc}")), []
 
         if not isinstance(frame, dict):
-            return _response(None, _error("frame must be a JSON object"))
+            return _response(None, _error("frame must be a JSON object")), []
 
         msg_type = frame.get("type")
         if not isinstance(msg_type, str):
-            return _response(None, _error("missing or invalid 'type'"))
+            return _response(None, _error("missing or invalid 'type'")), []
 
         payload = frame.get("payload", {})
         if not isinstance(payload, dict):
-            return _response(None, _error("'payload' must be a JSON object"))
+            return _response(None, _error("'payload' must be a JSON object")), []
 
         request_id = frame.get("request_id")
         if request_id is not None and not isinstance(request_id, str):
-            return _response(None, _error("'request_id' must be a string"))
+            return _response(None, _error("'request_id' must be a string")), []
 
         handler = self._HANDLERS.get(msg_type)
         if handler is None:
-            return _response(request_id, _error(f"unknown message type: {msg_type}"))
+            return _response(request_id, _error(f"unknown message type: {msg_type}")), []
 
         try:
             data = handler(self, payload)
-            return _response(request_id, {"ok": True, "data": data})
+            broadcasts: list[str] = []
+            if msg_type == TYPE_PICK:
+                broadcasts = self._pick_update_frames(data)
+            return _response(request_id, {"ok": True, "data": data}), broadcasts
         except ValueError as exc:
-            return _response(request_id, _error(str(exc)))
+            return _response(request_id, _error(str(exc))), []
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("unhandled error handling %s", msg_type)
-            return _response(request_id, _error(str(exc), code="INTERNAL_ERROR"))
+            return _response(request_id, _error(str(exc), code="INTERNAL_ERROR")), []
+
+    def _pick_update_frames(self, data: dict) -> list[str]:
+        """Build a ``PICK_UPDATE`` broadcast frame for a freshly ingested pick.
+
+        The payload carries the echo that ``DRAFT_PICK_MADE`` returns plus a
+        full ``BoardSnapshot`` so a desktop client can apply the change without
+        a follow-up request.
+        """
+        push = {
+            "type": TYPE_PICK_UPDATE,
+            "request_id": "",
+            "payload": {
+                "pick": data["pick"],
+                "available_count": data["available_count"],
+                "baselines": data["baselines"],
+                "dvorp_updated": data["dvorp_updated"],
+                "snapshot": self.state.snapshot(),
+            },
+        }
+        return [json.dumps(push)]
+
+    async def broadcast(self, frames: list[str], *, exclude=None) -> None:
+        """Fan out pre-serialized frames to connected clients.
+
+        ``exclude`` is skipped so the sender of an event does not receive its
+        own notification (it already got the correlated ``RESPONSE``).
+        """
+        if not frames:
+            return
+        stale = []
+        for ws in self.clients:
+            if ws is exclude:
+                continue
+            try:
+                for frame in frames:
+                    await ws.send(frame)
+            except Exception:  # pragma: no cover - defensive
+                stale.append(ws)
+        for ws in stale:
+            self.clients.discard(ws)
 
     # ------------------------------------------------------------------
     # Handlers
@@ -162,10 +223,22 @@ class DraftSession:
 
 
 async def handler(ws, session: DraftSession) -> None:
-    """Per-connection handler loop."""
-    async for message in ws:
-        response = session.handle(message)
-        await ws.send(response)
+    """Per-connection handler loop.
+
+    Sends the correlated ``RESPONSE`` back to the requesting client and fans
+    any ``PICK_UPDATE`` broadcasts out to the other connected clients. This is
+    how a pick streamed from the browser extension (one socket) instantly
+    updates the desktop UI (a second socket).
+    """
+    session.clients.add(ws)
+    try:
+        async for message in ws:
+            response, broadcasts = session.handle_frame(message)
+            await ws.send(response)
+            if broadcasts:
+                await session.broadcast(broadcasts, exclude=ws)
+    finally:
+        session.clients.discard(ws)
 
 
 async def run_server(host: str, port: int) -> None:

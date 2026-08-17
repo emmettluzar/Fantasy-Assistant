@@ -36,6 +36,7 @@ function App() {
   const stopEngine = useDraftStore((s) => s.stopEngine);
   const refreshEngineStatus = useDraftStore((s) => s.refreshEngineStatus);
   const subscribeConnection = useDraftStore((s) => s.subscribeConnection);
+  const subscribePicks = useDraftStore((s) => s.subscribePicks);
   const getRecommendations = useDraftStore((s) => s.getRecommendations);
   const resetDraft = useDraftStore((s) => s.resetDraft);
 
@@ -43,6 +44,10 @@ function App() {
 
   // Keep the store's WebSocket connection state subscribed for the badge.
   useEffect(() => subscribeConnection(), [subscribeConnection]);
+
+  // Subscribe to live `PICK_UPDATE` pushes so picks streamed by the browser
+  // extension / platform adapters update the board without a manual refresh.
+  useEffect(() => subscribePicks(), [subscribePicks]);
 
   // Seed engine status on first mount.
   useEffect(() => {

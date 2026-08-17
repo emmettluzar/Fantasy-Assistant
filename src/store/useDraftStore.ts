@@ -26,6 +26,7 @@ import {
   GetRecommendationsPayload,
   LeagueConfig,
   DEFAULT_LEAGUE_CONFIG,
+  PickUpdatePayload,
   Player,
   PlayerIndexEntry,
   Position,
@@ -90,6 +91,7 @@ interface DraftStore {
   // -------------------------------------------------------------------------
   connection: IpcConnectionState;
   subscribeConnection: () => () => void;
+  subscribePicks: () => () => void;
 
   // -------------------------------------------------------------------------
   // League + draft board state
@@ -153,7 +155,43 @@ function applySnapshot(
   };
 }
 
-export const useDraftStore = create<DraftStore>((set, get) => ({
+export const useDraftStore = create<DraftStore>((set, get) => {
+  /**
+   * Apply a server-pushed `PICK_UPDATE` to the live board.
+   *
+   * The pick originated on another socket (the browser extension or a Python
+   * platform adapter). The payload carries a full `BoardSnapshot`, so we can
+   * rebuild the authoritative pick grid locally and then refresh the remaining
+   * player pool + next-pick value without a manual round-trip.
+   */
+  const hydratePickUpdate = (update: PickUpdatePayload) => {
+    const { playerIndex } = get();
+    const snapshot = update.snapshot;
+
+    const picks: DraftPickRow[] = snapshot.picks.map((p: SnapshotPick) => ({
+      pickNumber: p.pick_number,
+      round: p.round,
+      teamIndex: p.team_index,
+      playerId: p.player_id,
+      playerName: playerIndex[p.player_id]?.name ?? p.player_id,
+      position: p.position,
+      fantasyPoints: p.fantasy_points,
+    }));
+
+    set({
+      config: snapshot.config,
+      teams: buildTeams(snapshot.config.teams_count),
+      userTeamIndex: snapshot.user_team_index,
+      picks,
+      draftedCount: snapshot.drafted_count,
+      availableCount: snapshot.available_count,
+    });
+
+    // Refresh the remaining pool and next-pick value against the new board.
+    void get().getRecommendations({});
+  };
+
+  return {
   engine: null,
   config: DEFAULT_LEAGUE_CONFIG,
   teams: [],
@@ -197,6 +235,13 @@ export const useDraftStore = create<DraftStore>((set, get) => ({
     });
     // Immediately reconcile in case the state changed before subscription.
     set({ connection: ipc.getState() });
+    return unsubscribe;
+  },
+
+  subscribePicks: () => {
+    const unsubscribe = ipc.onPickUpdate((update: PickUpdatePayload) => {
+      hydratePickUpdate(update);
+    });
     return unsubscribe;
   },
 
@@ -318,4 +363,5 @@ export const useDraftStore = create<DraftStore>((set, get) => ({
       set({ error: errorMessage(err), loading: false });
     }
   },
-}));
+  };
+});
