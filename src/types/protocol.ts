@@ -23,7 +23,9 @@ export type MessageType =
   | "EVALUATE_TRADE"
   | "CALCULATE_FAAB_BIDS"
   | "RESPONSE"
-  | "PICK_UPDATE";
+  | "PICK_UPDATE"
+  | "PLATFORM_LEAGUE_SYNCED"
+  | "ERROR";
 
 export type Position = "QB" | "RB" | "WR" | "TE" | "K" | "DST";
 
@@ -157,12 +159,15 @@ export type PlatformName = "sleeper" | "espn" | "yahoo";
 export interface SyncPlatformLeaguePayload {
   platform: PlatformName;
   league_id?: string;
+  // Season is shared by ESPN/Sleeper league lookups; ``year`` is kept as a
+  // legacy alias for older desktop clients.
+  season?: number;
+  year?: number;
   // Sleeper
   draft_id?: string;
   username?: string;
   user_team_index?: number;
   // ESPN
-  year?: number;
   espn_s2?: string;
   swid?: string;
   // Yahoo
@@ -182,10 +187,20 @@ export interface PlatformRoster {
   players: PlatformRosterPlayer[];
 }
 
+export interface PlatformLeagueTeam {
+  team_id: string;
+  team_name: string;
+  team_index: number;
+  is_user: boolean;
+}
+
 export interface SyncPlatformLeagueResponse {
+  platform: PlatformName;
+  league_id?: string;
   config: LeagueConfig;
-  user_team_index: number;
+  teams: PlatformLeagueTeam[];
   rosters: PlatformRoster[];
+  user_team_index: number;
 }
 
 // ---------------------------------------------------------------------------

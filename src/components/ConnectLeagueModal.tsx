@@ -2,7 +2,12 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link2, Loader, RefreshCw, X } from "lucide-react";
 
 import { useDraftStore } from "../store/useDraftStore";
-import { PlatformName, SyncPlatformLeaguePayload } from "../types/protocol";
+import {
+  PlatformLeagueTeam,
+  PlatformName,
+  SyncPlatformLeaguePayload,
+  SyncPlatformLeagueResponse,
+} from "../types/protocol";
 
 interface ConnectLeagueModalProps {
   open: boolean;
@@ -40,6 +45,7 @@ export default function ConnectLeagueModal({
   onClose,
 }: ConnectLeagueModalProps) {
   const syncPlatformLeague = useDraftStore((s) => s.syncPlatformLeague);
+  const selectPlatformTeam = useDraftStore((s) => s.selectPlatformTeam);
   const loading = useDraftStore((s) => s.loading);
   const error = useDraftStore((s) => s.error);
 
@@ -64,6 +70,10 @@ export default function ConnectLeagueModal({
   const [yahooLeagueId, setYahooLeagueId] = useState("");
   const [yahooOauthKey, setYahooOauthKey] = useState("");
 
+  // Team selection surfaced after a successful platform sync.
+  const [syncedTeams, setSyncedTeams] = useState<PlatformLeagueTeam[]>([]);
+  const [selectedTeamId, setSelectedTeamId] = useState("");
+
   // Reset local form state whenever the modal is opened.
   useEffect(() => {
     if (!open) return;
@@ -81,6 +91,8 @@ export default function ConnectLeagueModal({
     setEspnSwid("");
     setYahooLeagueId("");
     setYahooOauthKey("");
+    setSyncedTeams([]);
+    setSelectedTeamId("");
   }, [open]);
 
   if (!open) return null;
@@ -178,7 +190,37 @@ export default function ConnectLeagueModal({
       };
     }
 
-    await syncPlatformLeague(payload);
+    let result: SyncPlatformLeagueResponse;
+    try {
+      result = await syncPlatformLeague(payload);
+    } catch {
+      // Error surfaced in the store; keep the form open for correction.
+      return;
+    }
+
+    const teams = result.teams ?? [];
+
+    if (teams.length === 0) {
+      // No rosters returned; the board is configured with defaults.
+      onClose();
+      return;
+    }
+
+    if (teams.length === 1) {
+      await selectPlatformTeam(teams[0].team_id);
+      onClose();
+      return;
+    }
+
+    // Multiple teams: hand off to the "Select Your Team" step.
+    const detected = teams.find((team) => team.is_user);
+    setSyncedTeams(teams);
+    setSelectedTeamId(detected?.team_id ?? "");
+  };
+
+  const confirmTeamSelection = async () => {
+    if (!selectedTeamId) return;
+    await selectPlatformTeam(selectedTeamId);
     onClose();
   };
 
@@ -227,6 +269,46 @@ export default function ConnectLeagueModal({
           />
         </div>
 
+        {syncedTeams.length > 0 ? (
+          <div className="space-y-5 px-5 py-5">
+            <p className="text-sm text-slate-400">
+              We found multiple teams in this league. Select which one is yours
+              so your draft board and recommendations stay in sync.
+            </p>
+            <Field label="Select Your Team">
+              <select
+                value={selectedTeamId}
+                onChange={(event) => setSelectedTeamId(event.target.value)}
+                className="w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-200 focus:border-emerald-500 focus:outline-none"
+              >
+                <option value="">Choose your team…</option>
+                {syncedTeams.map((team) => (
+                  <option key={team.team_id} value={team.team_id}>
+                    {team.team_name}
+                    {team.is_user ? " (detected)" : ""}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-lg border border-white/10 px-4 py-2 text-sm font-medium text-slate-300 transition-colors hover:bg-white/5"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmTeamSelection}
+                disabled={loading || !selectedTeamId}
+                className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {loading ? "Saving…" : "Save My Team & Close"}
+              </button>
+            </div>
+          </div>
+        ) : (
         <form onSubmit={handleSubmit} className="space-y-5 px-5 py-5">
           {tab === "sleeper" && (
             <div className="space-y-4">
@@ -386,6 +468,7 @@ export default function ConnectLeagueModal({
             </button>
           </div>
         </form>
+        )}
       </div>
     </div>
   );

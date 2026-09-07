@@ -127,6 +127,18 @@ class SleeperAdapter:
             self._league = dict(self._get(f"/league/{self._resolve_league_id()}") or {})
         return self._league
 
+    def sync_league(self, *, league_id: Optional[str] = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Return ``(league_config, rosters)`` for a league-only sync.
+
+        ``SYNC_PLATFORM_LEAGUE`` supplies ``league_id`` directly; this mirrors
+        the ESPN adapter's ``fetch_league(...)`` shape so the server can treat
+        both platforms uniformly.
+        """
+        if league_id is not None:
+            self.league_id = str(league_id)
+        self.fetch_rosters()  # ensure team-index/total resolution
+        return self.to_league_config(), self.fetch_normalized_rosters()
+
     def fetch_rosters(self) -> list[dict[str, Any]]:
         """Fetch and cache league rosters for team-index resolution."""
         if self._rosters is None:
@@ -303,7 +315,12 @@ class SleeperAdapter:
                 for pid in (roster.get("players") or [])
             ]
             rosters.append(
-                {"team_index": index, "team_name": str(name), "players": players}
+                {
+                    "team_index": index,
+                    "team_id": str(roster.get("roster_id") or roster.get("owner_id") or (index + 1)),
+                    "team_name": str(name),
+                    "players": players,
+                }
             )
         return rosters
 

@@ -44,6 +44,16 @@ export type IpcStateListener = (state: IpcConnectionState) => void;
 /** Callback invoked when the server pushes a live ``PICK_UPDATE`` frame. */
 export type PickUpdateListener = (update: PickUpdatePayload) => void;
 
+/** Callback invoked when the server sends/streams a ``PLATFORM_LEAGUE_SYNCED`` frame. */
+export type PlatformLeagueSyncedListener = (
+  payload: SyncPlatformLeagueResponse,
+) => void;
+
+interface PlatformResolver {
+  resolve: (value: SyncPlatformLeagueResponse) => void;
+  reject: (reason: Error) => void;
+}
+
 type PendingResolver = {
   resolve: (value: ResponsePayload<unknown>) => void;
   reject: (reason: Error) => void;
@@ -77,6 +87,8 @@ export class IpcClient {
   private state: IpcConnectionState = "disconnected";
   private listeners = new Set<IpcStateListener>();
   private pickListeners = new Set<PickUpdateListener>();
+  private platformListeners = new Set<PlatformLeagueSyncedListener>();
+  private pendingPlatform = new Map<string, PlatformResolver>();
 
   /** Current high-level connection state. */
   getState(): IpcConnectionState {
@@ -96,6 +108,14 @@ export class IpcClient {
     this.pickListeners.add(listener);
     return () => {
       this.pickListeners.delete(listener);
+    };
+  }
+
+  /** Subscribe to ``PLATFORM_LEAGUE_SYNCED`` pushes. Returns an unsubscribe function. */
+  onPlatformLeagueSynced(listener: PlatformLeagueSyncedListener): () => void {
+    this.platformListeners.add(listener);
+    return () => {
+      this.platformListeners.delete(listener);
     };
   }
 
@@ -142,6 +162,35 @@ export class IpcClient {
         return;
       }
 
+      // ``PLATFORM_LEAGUE_SYNCED`` is a dedicated frame: correlate an in-flight
+      // sync request by request_id, otherwise fan out as a server push.
+      if (envelope.type === "PLATFORM_LEAGUE_SYNCED") {
+        const payload = envelope.payload as SyncPlatformLeagueResponse;
+        const resolver = this.pendingPlatform.get(envelope.request_id ?? "");
+        if (resolver) {
+          this.pendingPlatform.delete(envelope.request_id ?? "");
+          resolver.resolve(payload);
+        } else {
+          for (const listener of this.platformListeners) {
+            listener(payload);
+          }
+        }
+        return;
+      }
+
+      // Terminal ``ERROR`` frame for a failed platform sync.
+      if (envelope.type === "ERROR") {
+        const message =
+          (envelope as Envelope<{ message?: string }>).payload?.message ??
+          "engine error";
+        const resolver = this.pendingPlatform.get(envelope.request_id ?? "");
+        if (resolver) {
+          this.pendingPlatform.delete(envelope.request_id ?? "");
+          resolver.reject(new IpcError(message, "ENGINE_ERROR"));
+        }
+        return;
+      }
+
       if (envelope.type !== "RESPONSE") return;
       const resolver = this.pending.get(envelope.request_id ?? "");
       if (resolver) {
@@ -154,6 +203,9 @@ export class IpcClient {
       this.ws = null;
       this.setState("disconnected");
       this.rejectPending(new IpcError("socket closed before response", "WS_CLOSED"));
+      this.rejectPendingPlatform(
+        new IpcError("socket closed before response", "WS_CLOSED"),
+      );
       this.scheduleReconnect();
     };
 
@@ -167,6 +219,13 @@ export class IpcClient {
     for (const [id, resolver] of this.pending) {
       resolver.reject(reason);
       this.pending.delete(id);
+    }
+  }
+
+  private rejectPendingPlatform(reason: IpcError): void {
+    for (const [id, resolver] of this.pendingPlatform) {
+      resolver.reject(reason);
+      this.pendingPlatform.delete(id);
     }
   }
 
@@ -249,9 +308,31 @@ export class IpcClient {
   async syncPlatformLeague(
     payload: SyncPlatformLeaguePayload,
   ): Promise<SyncPlatformLeagueResponse> {
-    return this.unwrap(
-      this.request<SyncPlatformLeagueResponse>("SYNC_PLATFORM_LEAGUE", payload),
-    );
+    return new Promise<SyncPlatformLeagueResponse>((resolve, reject) => {
+      this.connect();
+
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        reject(new IpcError("websocket not connected", "WS_NOT_OPEN"));
+        return;
+      }
+
+      const requestId = nextRequestId();
+      this.pendingPlatform.set(requestId, { resolve, reject });
+
+      const envelope: Envelope = {
+        type: "SYNC_PLATFORM_LEAGUE",
+        request_id: requestId,
+        payload,
+      };
+      this.ws.send(JSON.stringify(envelope));
+
+      setTimeout(() => {
+        if (this.pendingPlatform.has(requestId)) {
+          this.pendingPlatform.delete(requestId);
+          reject(new IpcError("request timed out", "TIMEOUT"));
+        }
+      }, REQUEST_TIMEOUT_MS);
+    });
   }
 
   async optimizeLineup(

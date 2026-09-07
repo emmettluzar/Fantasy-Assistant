@@ -74,6 +74,40 @@ class PlatformRoster(BaseModel):
     players: list[PlatformRosterPlayer] = Field(default_factory=list)
 
 
+class PlatformLeagueTeam(BaseModel):
+    """A single team surfaced in a ``PLATFORM_LEAGUE_SYNCED`` response.
+
+    ``team_id`` is the platform's stable roster identifier (falling back to the
+    stringified 0-based index when a platform does not expose one). ``team_index``
+    is the 0-based slot the engine uses; the client maps the user's selected team
+    back to this index when saving the user team.
+    """
+
+    team_id: str
+    team_name: str = ""
+    team_index: int = Field(ge=0)
+    is_user: bool = False
+
+
+class PlatformLeagueSyncedPayload(BaseModel):
+    """Response payload for ``PLATFORM_LEAGUE_SYNCED``.
+
+    Carries the applied :class:`LeagueConfig`, the normalized team list, and the
+    raw roster records so the client can populate the board + dashboard without
+    a follow-up request.
+    """
+
+    platform: str = Field(pattern="^(sleeper|espn|yahoo)$")
+    league_id: Optional[str] = None
+    config: LeagueConfig
+    teams: list[PlatformLeagueTeam] = Field(default_factory=list)
+    rosters: list[PlatformRoster] = Field(default_factory=list)
+    # 0-based slot the engine treats as the user's drafting team. For ESPN/Yahoo
+    # this is decided after the team list is returned; the client re-applies the
+    # config once the user picks a team.
+    user_team_index: int = Field(default=0, ge=0)
+
+
 class SyncPlatformLeaguePayload(BaseModel):
     """Payload for ``SYNC_PLATFORM_LEAGUE``.
 
@@ -84,12 +118,15 @@ class SyncPlatformLeaguePayload(BaseModel):
 
     platform: str = Field(pattern="^(sleeper|espn|yahoo)$")
     league_id: Optional[str] = None
+    # Season is shared by ESPN/Sleeper league lookups; ``year`` is a legacy
+    # alias kept for backward compatibility with older desktop clients.
+    season: Optional[int] = None
+    year: Optional[int] = None
     # Sleeper
     draft_id: Optional[str] = None
     username: Optional[str] = None
     user_team_index: int = Field(default=0, ge=0)
     # ESPN
-    year: Optional[int] = None
     espn_s2: Optional[str] = None
     swid: Optional[str] = None
     # Yahoo
@@ -200,4 +237,6 @@ __all__ = [
     "SyncPlatformLeaguePayload",
     "PlatformRoster",
     "PlatformRosterPlayer",
+    "PlatformLeagueTeam",
+    "PlatformLeagueSyncedPayload",
 ]

@@ -87,6 +87,46 @@ class EspnAdapter:
         league = self._get_league()
         return dict(getattr(league, "settings", None) or {})
 
+    def fetch_league(
+        self,
+        league_id: Optional[int] = None,
+        season: Optional[int] = None,
+        espn_s2: Optional[str] = None,
+        swid: Optional[str] = None,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Return ``(league_config, rosters)`` for the connected league.
+
+        Accepts the same locator/credential fields as the constructor so the
+        server can call ``EspnAdapter.fetch_league(league_id, season, espn_s2,
+        swid)`` directly. Any omitted field falls back to the value captured at
+        construction time (or the ``ESPN_*`` environment variables).
+        """
+        if league_id is not None:
+            self.league_id = int(league_id)
+        if season is not None:
+            self.year = int(season)
+        if espn_s2 is not None:
+            self.espn_s2 = espn_s2
+        if swid is not None:
+            self.swid = swid
+        return self.to_league_config(), self.fetch_rosters()
+
+    @classmethod
+    def fetch_league_static(
+        cls,
+        league_id: int,
+        season: Optional[int] = None,
+        espn_s2: Optional[str] = None,
+        swid: Optional[str] = None,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Construct an adapter and fetch ``(league_config, rosters)``."""
+        return cls(
+            league_id=league_id,
+            year=season,
+            espn_s2=espn_s2,
+            swid=swid,
+        ).fetch_league()
+
     def to_league_config(self, *, name: Optional[str] = None) -> dict[str, Any]:
         """Map ESPN settings to the engine ``LeagueConfig`` schema."""
         settings = self.fetch_settings()
@@ -134,6 +174,7 @@ class EspnAdapter:
         for index, team in enumerate(teams):
             roster: dict[str, Any] = {
                 "team_index": index,
+                "team_id": str(getattr(team, "team_id", None) or (index + 1)),
                 "team_name": getattr(team, "team_name", None) or f"Team {index + 1}",
                 "players": [],
             }

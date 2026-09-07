@@ -27,6 +27,7 @@ import {
   LeagueConfig,
   DEFAULT_LEAGUE_CONFIG,
   PickUpdatePayload,
+  PlatformLeagueTeam,
   PlatformRoster,
   Player,
   PlayerIndexEntry,
@@ -36,6 +37,7 @@ import {
   SnapshotPick,
   SyncLeagueConfigPayload,
   SyncPlatformLeaguePayload,
+  SyncPlatformLeagueResponse,
   Team,
 } from "../types/protocol";
 
@@ -79,14 +81,14 @@ function buildTeams(teamCount: number): Team[] {
   }));
 }
 
-/** Derive the team list, prefering real platform roster names when present. */
-function buildTeamsFromRosters(
+/** Derive the team list from the platform's normalized team records. */
+function buildTeamsFromPlatformTeams(
   teamCount: number,
-  rosters: PlatformRoster[] = [],
+  platformTeams: PlatformLeagueTeam[] = [],
 ): Team[] {
   const byIndex = new Map<number, string>();
-  for (const roster of rosters) {
-    if (roster.team_name) byIndex.set(roster.team_index, roster.team_name);
+  for (const team of platformTeams) {
+    if (team.team_name) byIndex.set(team.team_index, team.team_name);
   }
   return Array.from({ length: teamCount }, (_, index) => ({
     index,
@@ -116,11 +118,14 @@ interface DraftStore {
   config: LeagueConfig;
   teams: Team[];
   userTeamIndex: number;
+  userTeamId: string | null;
   picks: DraftPickRow[];
   draftedCount: number;
   availableCount: number;
   rNext: number;
   platformRosters: PlatformRoster[];
+  platformTeams: PlatformLeagueTeam[];
+  allowNetwork: boolean;
 
   // -------------------------------------------------------------------------
   // Available player pool + recommendations
@@ -135,7 +140,10 @@ interface DraftStore {
   // Actions
   // -------------------------------------------------------------------------
   syncLeagueConfig: (payload: SyncLeagueConfigPayload) => Promise<void>;
-  syncPlatformLeague: (payload: SyncPlatformLeaguePayload) => Promise<void>;
+  syncPlatformLeague: (
+    payload: SyncPlatformLeaguePayload,
+  ) => Promise<SyncPlatformLeagueResponse>;
+  selectPlatformTeam: (teamId: string) => Promise<void>;
   getRecommendations: (payload?: GetRecommendationsPayload) => Promise<void>;
   draftPickMade: (payload: DraftPickMadePayload) => Promise<void>;
   resetDraft: (payload?: ResetDraftPayload) => Promise<void>;
@@ -215,11 +223,14 @@ export const useDraftStore = create<DraftStore>((set, get) => {
   config: DEFAULT_LEAGUE_CONFIG,
   teams: [],
   userTeamIndex: 0,
+  userTeamId: null,
   picks: [],
   draftedCount: 0,
   availableCount: 0,
   rNext: 0,
   platformRosters: [],
+  platformTeams: [],
+  allowNetwork: false,
 
   playerPool: [],
   playerIndex: {},
@@ -290,11 +301,18 @@ export const useDraftStore = create<DraftStore>((set, get) => {
     set({ loading: true, error: null });
     try {
       const result = await ipc.syncPlatformLeague(payload);
+      const userTeam = result.teams.find((team) => team.is_user) ?? null;
       set({
         config: result.config,
-        teams: buildTeamsFromRosters(result.config.teams_count, result.rosters),
+        teams: buildTeamsFromPlatformTeams(
+          result.config.teams_count,
+          result.teams,
+        ),
         userTeamIndex: result.user_team_index,
+        userTeamId: userTeam?.team_id ?? null,
         platformRosters: result.rosters,
+        platformTeams: result.teams,
+        allowNetwork: payload.allow_network ?? false,
         picks: [],
         draftedCount: 0,
         availableCount: 0,
@@ -304,10 +322,35 @@ export const useDraftStore = create<DraftStore>((set, get) => {
         playerIndex: {},
         loading: false,
       });
-      // Populate recommendations now that the league is configured.
-      await get().getRecommendations();
+      return result;
     } catch (err) {
       set({ error: errorMessage(err), loading: false });
+      throw err;
+    }
+  },
+
+  selectPlatformTeam: async (teamId) => {
+    const { config, platformTeams, allowNetwork } = get();
+    const team = platformTeams.find((entry) => entry.team_id === teamId);
+    if (!team) {
+      set({ error: `Unknown team: ${teamId}` });
+      return;
+    }
+    set({ loading: true, error: null });
+    try {
+      // Persist the chosen slot in the engine so downstream draft accounting
+      // (user-owned tallies, next-pick math) uses the correct team.
+      await ipc.syncLeagueConfig({
+        ...config,
+        user_team_index: team.team_index,
+        allow_network: allowNetwork,
+      });
+      set({ userTeamIndex: team.team_index, userTeamId: team.team_id });
+      await get().getRecommendations();
+    } catch (err) {
+      set({ error: errorMessage(err) });
+    } finally {
+      set({ loading: false });
     }
   },
 

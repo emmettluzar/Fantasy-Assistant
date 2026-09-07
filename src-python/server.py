@@ -68,10 +68,44 @@ TYPE_EVALUATE_TRADE = "EVALUATE_TRADE"
 TYPE_FAAB = "CALCULATE_FAAB_BIDS"
 # Platform league connection + ingestion.
 TYPE_SYNC_PLATFORM = "SYNC_PLATFORM_LEAGUE"
+# Server response for a completed platform league sync (also usable as a push).
+TYPE_PLATFORM_SYNCED = "PLATFORM_LEAGUE_SYNCED"
+# Terminal error frame for platform-sync failures.
+TYPE_ERROR = "ERROR"
 
 
 def _error(message: str, code: str = "BAD_REQUEST") -> dict:
     return {"ok": False, "error": message, "code": code}
+
+
+class PlatformSyncError(Exception):
+    """Raised when a platform adapter cannot sync a league (e.g. ESPN auth).
+
+    ``handle_frame`` converts this into the terminal ``ERROR`` frame required by
+    the IPC contract rather than a generic ``RESPONSE`` error.
+    """
+
+
+def _platform_synced_frame(request_id: Optional[str], data: dict) -> str:
+    """Serialize a ``PLATFORM_LEAGUE_SYNCED`` response frame."""
+    return json.dumps(
+        {
+            "type": TYPE_PLATFORM_SYNCED,
+            "request_id": request_id or "",
+            "payload": data,
+        }
+    )
+
+
+def _platform_error_frame(request_id: Optional[str], message: str) -> str:
+    """Serialize a terminal ``ERROR`` frame for a failed platform sync."""
+    return json.dumps(
+        {
+            "type": TYPE_ERROR,
+            "request_id": request_id or "",
+            "message": message,
+        }
+    )
 
 
 def _coerce_league_id(raw: Optional[str], platform_label: str) -> int:
@@ -150,7 +184,13 @@ class DraftSession:
             broadcasts: list[str] = []
             if msg_type == TYPE_PICK:
                 broadcasts = self._pick_update_frames(data)
+            if msg_type == TYPE_SYNC_PLATFORM:
+                # League sync uses a dedicated response frame rather than the
+                # generic RESPONSE envelope (see IPC_PROTOCOL.md).
+                return _platform_synced_frame(request_id, data), []
             return _response(request_id, {"ok": True, "data": data}), broadcasts
+        except PlatformSyncError as exc:
+            return _platform_error_frame(request_id, str(exc)), []
         except ValueError as exc:
             return _response(request_id, _error(str(exc))), []
         except Exception as exc:  # pragma: no cover - defensive
@@ -289,7 +329,8 @@ class DraftSession:
 
         Invokes the matching adapter, normalizes its league rules and rosters,
         applies the resulting :class:`LeagueConfig` to the live
-        :class:`DraftState`, and returns the populated config + roster payload.
+        :class:`DraftState`, and returns the ``PLATFORM_LEAGUE_SYNCED`` payload:
+        the applied config, the normalized team list, and the raw rosters.
         """
         req = SyncPlatformLeaguePayload.model_validate(payload)
         config_dict, rosters, user_team_index = self._ingest_platform_league(req)
@@ -300,10 +341,39 @@ class DraftSession:
             allow_network=req.allow_network,
         )
         return {
+            "platform": req.platform,
+            "league_id": req.league_id,
             "config": config.model_dump(),
-            "user_team_index": user_team_index,
+            "teams": self._normalize_platform_teams(rosters, user_team_index),
             "rosters": rosters,
+            "user_team_index": user_team_index,
         }
+
+    @staticmethod
+    def _normalize_platform_teams(
+        rosters: list[dict], user_team_index: int
+    ) -> list[dict]:
+        """Derive the ``PLATFORM_LEAGUE_SYNCED`` team list from raw rosters."""
+        teams: list[dict] = []
+        for roster in rosters:
+            index = int(roster.get("team_index", len(teams)))
+            team_id = str(
+                roster.get("team_id")
+                or roster.get("owner_id")
+                or roster.get("team_name")
+                or index
+            )
+            teams.append(
+                {
+                    "team_id": team_id,
+                    "team_name": str(
+                        roster.get("team_name") or f"Team {index + 1}"
+                    ),
+                    "team_index": index,
+                    "is_user": index == user_team_index,
+                }
+            )
+        return teams
 
     def _ingest_platform_league(
         self, req: SyncPlatformLeaguePayload
@@ -318,24 +388,27 @@ class DraftSession:
                 draft_id=req.draft_id,
                 league_id=req.league_id,
             )
-            rosters = adapter.fetch_normalized_rosters()
-            return adapter.to_league_config(), rosters, req.user_team_index
+            config_dict, rosters = adapter.sync_league(league_id=req.league_id)
+            return config_dict, rosters, req.user_team_index
 
         if platform == "espn":
             from integrations.espn import EspnAdapter
 
             league_id = _coerce_league_id(req.league_id, "ESPN")
-            adapter = EspnAdapter(
-                league_id=league_id,
-                year=req.year,
-                swid=req.swid,
-                espn_s2=req.espn_s2,
-            )
-            return (
-                adapter.to_league_config(),
-                adapter.fetch_rosters(),
-                req.user_team_index,
-            )
+            try:
+                adapter = EspnAdapter(league_id=league_id)
+                config_dict, rosters = adapter.fetch_league(
+                    league_id=league_id,
+                    season=(req.season or req.year),
+                    espn_s2=req.espn_s2,
+                    swid=req.swid,
+                )
+            except Exception as exc:
+                raise PlatformSyncError(
+                    "Failed to connect to ESPN: Check League ID or provide "
+                    "espn_s2/SWID for private leagues."
+                ) from exc
+            return config_dict, rosters, req.user_team_index
 
         if platform == "yahoo":
             import os
