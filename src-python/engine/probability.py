@@ -1,18 +1,24 @@
 """Make-It-Back probability and master decision utility.
 
-Implements MATH_MODELS.md §4 and §5:
+Implements MATH_MODELS.md §4, §5, and §6:
 
     P_MB(i, r_next) = 1 - Phi((r_next - ADP_i) / sigma_i)
 
     U_i(t) = alpha * DVORP_i(t) + beta * (1 - P_MB(i, r_next))
            + gamma * R_need(p) - delta * P_bye(i)
+           + epsilon * V_upside(i)
 
-with default weights alpha = 0.40, beta = 0.35, gamma = 0.20, delta = 0.05.
+with default weights alpha = 0.40, beta = 0.35, gamma = 0.20, delta = 0.05,
+epsilon = 0.12 (upside coefficient for contingent/variance value, §6).
+
+As the user's roster fills (``user_picks`` rises), ``alpha`` decays toward
+zero while ``epsilon`` scales up, shifting the engine from safe median DVORP
+toward high-variance / contingent-upside targets in the final bench rounds.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Mapping, Optional, Sequence
 
 from scipy.stats import norm
@@ -24,14 +30,28 @@ from .models import (
     RosterSettings,
 )
 
-# Default weights from MATH_MODELS.md §5.
+# Warm up scipy's lazily-loaded special-function path so the first live pick
+# event does not pay the ~100ms import/initialization overhead of ``norm.cdf``.
+norm.cdf(0.0)
+
+# Default weights from MATH_MODELS.md §5 / §6.
 DEFAULT_ALPHA = 0.40
 DEFAULT_BETA = 0.35
 DEFAULT_GAMMA = 0.20
 DEFAULT_DELTA = 0.05
+DEFAULT_EPSILON = 0.12
 
 # Bye-week overlap penalty applied to each additional starter on the same bye.
 BYE_OVERLAP_PENALTY = 0.5
+
+# Dynamic upside-shift schedule (MATH_MODELS.md §6).
+# ``UPSIDE_SHIFT_AFTER`` is the user pick count at which alpha begins decaying
+# and epsilon begins scaling up; ``UPSIDE_SHIFT_FULL`` is the pick count at
+# which the shift saturates (bench rounds).
+UPSIDE_SHIFT_AFTER = 8
+UPSIDE_SHIFT_FULL = 14
+UPSIDE_ALPHA_FLOOR = 0.10
+UPSIDE_EPSILON_MAX = 0.30
 
 
 @dataclass
@@ -42,9 +62,12 @@ class DecisionWeights:
     beta: float = DEFAULT_BETA
     gamma: float = DEFAULT_GAMMA
     delta: float = DEFAULT_DELTA
+    epsilon: float = DEFAULT_EPSILON
 
     def __post_init__(self) -> None:
-        norm_sum = self.alpha + self.beta + self.gamma + self.delta
+        norm_sum = (
+            self.alpha + self.beta + self.gamma + self.delta + self.epsilon
+        )
         if norm_sum <= 0:
             raise ValueError("Decision weights must have a positive sum")
 
@@ -59,6 +82,7 @@ class UtilityComponents:
     p_mb: float
     r_need: float
     p_bye: float
+    upside: float
     utility: float
 
 
@@ -159,20 +183,65 @@ def bye_overlap_penalty(
 # ---------------------------------------------------------------------------
 
 
+def dvorp_to_unit(dvorp: float) -> float:
+    """Map signed DVORP to a 0-1 positive scale via a soft logistic squeeze.
+
+    This keeps the ``alpha`` coefficient monotonic in the same positive range
+    as ``upside_score`` so the dynamic alpha/epsilon re-weighting is directly
+    interpretable: a zero/negative DVORP maps to ~0, a large positive DVORP
+    saturates toward 1.
+    """
+    if dvorp <= 0:
+        return 0.0
+    return float(dvorp / (dvorp + 5.0))
+
+
 def decision_utility(
     dvorp: float,
     p_mb: float,
     r_need: float,
     p_bye: float,
+    upside: float = 0.0,
     weights: Optional[DecisionWeights] = None,
 ) -> float:
-    """Master decision utility ``U_i(t)`` (MATH_MODELS.md §5)."""
+    """Master decision utility ``U_i(t)`` (MATH_MODELS.md §5/§6)."""
     w = weights or DecisionWeights()
     return float(
         w.alpha * dvorp
         + w.beta * (1.0 - p_mb)
         + w.gamma * r_need
         - w.delta * p_bye
+        + w.epsilon * upside
+    )
+
+
+def dynamic_upside_weights(
+    weights: DecisionWeights,
+    user_picks: int,
+) -> DecisionWeights:
+    """Scale ``alpha`` down and ``epsilon`` up as the roster fills (§6).
+
+    Early in the draft (``user_picks <= UPSIDE_SHIFT_AFTER``) weights are
+    unchanged. Between ``UPSIDE_SHIFT_AFTER`` and ``UPSIDE_SHIFT_FULL`` the
+    safety/DVORP weight ``alpha`` decays linearly toward
+    :data:`UPSIDE_ALPHA_FLOOR` while the upside weight ``epsilon`` rises
+    linearly toward :data:`UPSIDE_EPSILON_MAX`. Past ``UPSIDE_SHIFT_FULL``
+    the shift is saturated.
+    """
+    if user_picks <= UPSIDE_SHIFT_AFTER:
+        return weights
+    span = max(UPSIDE_SHIFT_FULL - UPSIDE_SHIFT_AFTER, 1)
+    t = min(max((user_picks - UPSIDE_SHIFT_AFTER) / span, 0.0), 1.0)
+
+    alpha = weights.alpha + (UPSIDE_ALPHA_FLOOR - weights.alpha) * t
+    epsilon = weights.epsilon + (UPSIDE_EPSILON_MAX - weights.epsilon) * t
+
+    return DecisionWeights(
+        alpha=alpha,
+        beta=weights.beta,
+        gamma=weights.gamma,
+        delta=weights.delta,
+        epsilon=epsilon,
     )
 
 
@@ -186,6 +255,17 @@ class DecisionContext:
     starters_bye: Mapping[int, int] = field(default_factory=dict)
     r_next: float = 0.0
     weights: DecisionWeights = field(default_factory=DecisionWeights)
+    user_picks: int = 0
+
+
+def _context_with_shift(
+    context: DecisionContext,
+    user_picks: Optional[int] = None,
+) -> DecisionContext:
+    """Return a context whose weights reflect the dynamic upside shift."""
+    picks = user_picks if user_picks is not None else context.user_picks
+    shifted_weights = dynamic_upside_weights(context.weights, max(picks, 0))
+    return replace(context, weights=shifted_weights, user_picks=max(picks, 0))
 
 
 def score_decision(
@@ -197,13 +277,20 @@ def score_decision(
     """Compute the decision utility for a single player.
 
     Pass ``dvorp`` to avoid recomputing it; otherwise ``context.dvorp`` is
-    consulted by ``player_id``.
+    consulted by ``player_id``. The signed DVORP is safely scaled to a 0-1
+    positive range before multiplying by ``alpha`` so the dynamic alpha/epsilon
+    shift re-weights DVORP and upside on a comparable scale.
     """
     pv = dvorp if dvorp is not None else context.dvorp.get(player.player_id, 0.0)
+    raw_dvorp = context.dvorp.get(player.player_id, pv)
     p_mb = make_it_back_probability(player, context.r_next) if context.r_next > 0 else 0.0
     r_need = roster_need_factor(player.position, context.roster_slots, context.owned)
     p_bye = bye_overlap_penalty(player, context.starters_bye)
-    u = decision_utility(pv, p_mb, r_need, p_bye, context.weights)
+    upside = float(getattr(player, "upside_score", 0.0) or 0.0)
+    dvorp_scaled = float(dvorp_to_unit(raw_dvorp))
+    u = decision_utility(
+        dvorp_scaled, p_mb, r_need, p_bye, upside, context.weights
+    )
     return UtilityComponents(
         player_id=player.player_id,
         position=player.position,
@@ -211,6 +298,7 @@ def score_decision(
         p_mb=p_mb,
         r_need=r_need,
         p_bye=p_bye,
+        upside=upside,
         utility=u,
     )
 
@@ -220,16 +308,26 @@ def rank_decisions(
     context: DecisionContext,
     *,
     dvorp_by_id: Optional[Mapping[str, float]] = None,
+    user_picks: Optional[int] = None,
 ) -> list[UtilityComponents]:
     """Rank available players by :math:`U_i(t)` descending.
 
     ``dvorp_by_id`` should map ``player_id`` to its DVORP; when omitted an
     empty map is used (DVORP defaults to 0 for every player). Use the DVORP
     engine's :func:`~engine.dvorp.compute_all_dvorp` to produce this mapping.
+
+    If ``user_picks`` is provided (or already set on ``context``) the dynamic
+    upside shift scales ``alpha`` down and ``epsilon`` up as the roster fills.
     """
+    effective = _context_with_shift(context, user_picks)
     dvorp_map = dict(dvorp_by_id or {})
+    dvorp_lookup = dict(effective.dvorp or {})
+    for player_id, value in dvorp_map.items():
+        dvorp_lookup[player_id] = value
+    effective.dvorp = dvorp_lookup
+
     scored = [
-        score_decision(p, context, dvorp=dvorp_map.get(p.player_id))
+        score_decision(p, effective, dvorp=dvorp_map.get(p.player_id))
         for p in players
     ]
     scored.sort(key=lambda c: (c.utility, c.dvorp), reverse=True)
@@ -249,11 +347,18 @@ __all__ = [
     "DEFAULT_BETA",
     "DEFAULT_GAMMA",
     "DEFAULT_DELTA",
+    "DEFAULT_EPSILON",
+    "UPSIDE_SHIFT_AFTER",
+    "UPSIDE_SHIFT_FULL",
+    "UPSIDE_ALPHA_FLOOR",
+    "UPSIDE_EPSILON_MAX",
     "make_it_back_probability",
     "make_it_back_matrix",
     "roster_need_factor",
     "bye_overlap_penalty",
     "decision_utility",
+    "dynamic_upside_weights",
+    "dvorp_to_unit",
     "score_decision",
     "rank_decisions",
     "compute_player_dvorp_map",

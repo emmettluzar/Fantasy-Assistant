@@ -229,6 +229,7 @@ class DraftState:
             owned=dict(self.user_owned),
             starters_bye=dict(self.user_starters_bye),
             r_next=r_next,
+            user_picks=sum(int(v) for v in self.user_owned.values()),
         )
         ranked = rank_decisions(remaining, context, dvorp_by_id=dvorp_map)
 
@@ -248,6 +249,7 @@ class DraftState:
                     "p_mb": choice.p_mb,
                     "r_need": choice.r_need,
                     "p_bye": choice.p_bye,
+                    "upside_score": player.upside_score,
                     "utility": choice.utility,
                 }
             )

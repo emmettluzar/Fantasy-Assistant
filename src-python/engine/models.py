@@ -220,6 +220,15 @@ class PlayerProjection(BaseModel):
     cpoe: float = Field(default=0.0, description="Completion Percentage Over Expected")
     fantasy_points: float = Field(default=0.0, description="Projected fantasy points under active scoring")
 
+    # Contingent upside & variance inputs (MATH_MODELS.md §6)
+    experience_years: int = Field(default=1, description="NFL seasons played (0 = rookie)")
+    is_rookie: bool = Field(default=False, description="True if the player is a rookie")
+    is_backup_rb: bool = Field(default=False, description="True if RB is behind the starter on the depth chart")
+    weekly_stdev: float = Field(default=0.0, description="Std dev of historical weekly fantasy points (veterans)")
+    starter_xfp: float = Field(default=0.0, description="xFP of the starter this player would inherit (contingent value)")
+
+    upside_score: float = Field(default=0.0, description="Normalized 0-1 contingent upside / variance score")
+
     model_config = ConfigDict(extra="ignore", validate_assignment=True)
 
 

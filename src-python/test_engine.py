@@ -91,6 +91,7 @@ def draft_scenario(config: LeagueConfig, title: str, seed: int = 7) -> None:
     user_owned: dict[Position, int] = defaultdict(int)
     user_roster: list[PlayerProjection] = []
     user_starters_bye: dict[int, int] = defaultdict(int)
+    late_round_recs: list[tuple[PlayerProjection, object]] = []
 
     teams = config.teams_count
     total_picks = teams * ROUNDS
@@ -130,7 +131,12 @@ def draft_scenario(config: LeagueConfig, title: str, seed: int = 7) -> None:
                     starters_bye=dict(user_starters_bye),
                     r_next=r_next,
                 )
-                ranked = rank_decisions(remaining, context, dvorp_by_id=dvorp_map)
+                ranked = rank_decisions(
+                    remaining,
+                    context,
+                    dvorp_by_id=dvorp_map,
+                    user_picks=len(user_roster),
+                )
                 choice = ranked[0] if ranked else None
                 if choice is None:
                     continue
@@ -140,12 +146,16 @@ def draft_scenario(config: LeagueConfig, title: str, seed: int = 7) -> None:
                 if len(user_roster) <= config.roster_slots.total_starters():
                     user_starters_bye[player.bye_week] += 1
 
+                if rnd >= 12:
+                    late_round_recs.append((player, choice))
+
                 print(
                     f"[Pick {overall:3d} | R{rnd:2d} | USER] "
                     f"Top rec: {player.name:20s} {player.position:2s} "
                     f"FP={player.fantasy_points:6.1f} DVORP={choice.dvorp:6.2f} "
-                    f"P_MB={choice.p_mb:5.3f} R_need={choice.r_need:5.3f} "
-                    f"P_bye={choice.p_bye:5.3f} Util={choice.utility:7.4f}"
+                    f"Upside={choice.upside:5.3f} P_MB={choice.p_mb:5.3f} "
+                    f"R_need={choice.r_need:5.3f} P_bye={choice.p_bye:5.3f} "
+                    f"Util={choice.utility:7.4f}"
                 )
             else:
                 # Opponent: draft best remaining value (pure DVORP).
@@ -177,6 +187,26 @@ def draft_scenario(config: LeagueConfig, title: str, seed: int = 7) -> None:
     print(f"Total picks simulated: {len(picked)}")
     print(f"DVORP/decision latency: avg={avg_ms:.2f}ms  max={max_ms:.2f}ms "
           f"(target < 50ms)")
+
+    # ------------------------------------------------------------------
+    # Late-round upside-shift verification
+    # ------------------------------------------------------------------
+    if late_round_recs:
+        upside_values = [c.upside for _, c in late_round_recs]
+        high_upside = sum(1 for u in upside_values if u >= 0.8)
+        avg_u = sum(upside_values) / len(upside_values)
+        backup_or_rookie = sum(
+            1 for p, _ in late_round_recs if p.is_backup_rb or p.is_rookie
+        )
+        print("-" * 78)
+        print(f"Late-round (R12+) recommendations: {len(late_round_recs)}")
+        print(f"  Avg upside_score: {avg_u:.3f}")
+        print(f"  High-upside (>=0.8): {high_upside}/{len(late_round_recs)}")
+        print(f"  Backup RBs / rookies selected: {backup_or_rookie}/{len(late_round_recs)}")
+        if avg_u >= 0.6 and high_upside > 0:
+            print("UPSIDE SHIFT: PASS (late picks favor high-variance/backup targets)")
+        else:
+            print("UPSIDE SHIFT: FAIL (late picks still favor low-ceiling veterans)")
 
 
 def main() -> None:

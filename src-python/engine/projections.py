@@ -199,7 +199,57 @@ def normalize_derived_metrics(
         p.xfp = compute_xfp(p, scoring)
         p.fantasy_points = compute_fantasy_points(p, scoring)
         enriched.append(p)
-    return enriched
+    return normalize_upside_scores(enriched)
+
+
+def compute_upside_score(proj: PlayerProjection) -> float:
+    """Raw (pre-normalization) contingent upside & variance signal.
+
+    MATH_MODELS.md §6: rookies and backup running backs are valued by the
+    contingent production they would inherit if the starter missed time
+    (``starter_xfp * 0.75``); veterans are valued by the standard deviation of
+    their historical weekly fantasy points (``weekly_stdev``).
+    """
+    if proj.is_rookie or proj.is_backup_rb:
+        contingent = proj.starter_xfp * 0.75
+        if contingent > 0:
+            return float(contingent)
+    return float(proj.weekly_stdev)
+
+
+def normalize_upside_scores(
+    players: Sequence[PlayerProjection],
+) -> list[PlayerProjection]:
+    """Normalize raw :func:`compute_upside_score` values to a 0-1 scale.
+
+    Percentile rank (with average ties) is used instead of min-max so a few
+    extreme contingent-value lotto tickets do not collapse every veteran's
+    variance score to ~0; the result is a stable 0-1 :attr:`upside_score`
+    across the available pool.
+    """
+    pool = [p.model_copy(deep=True) for p in players]
+    n = len(pool)
+    if n == 0:
+        return pool
+
+    raw = [compute_upside_score(p) for p in pool]
+    if max(raw) <= 0.0 or n == 1:
+        for p in pool:
+            p.upside_score = 0.0
+        return pool
+
+    order = sorted(range(n), key=lambda i: raw[i])
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and raw[order[j + 1]] == raw[order[i]]:
+            j += 1
+        # Average rank over the tie group -> percentile in [0, 1].
+        norm = ((i + j) / 2.0) / (n - 1)
+        for k in range(i, j + 1):
+            pool[order[k]].upside_score = float(norm)
+        i = j + 1
+    return pool
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +407,11 @@ def generate_synthetic_pool(
     rng = random.Random(seed)
     sizes = {**_DEFAULT_POOL_SIZE, **(pool_size or {})}
 
+    # Reference scoring used to derive position ceilings for contingent upside.
+    reference = ScoringRules(rec=1.0)
+    top_xfp: dict[str, float] = {}
+    weekly_stdev_base = {"QB": 5.0, "RB": 6.0, "WR": 6.5, "TE": 4.5}
+
     def r(lo: float, hi: float) -> float:
         return round(rng.uniform(lo, hi), 2)
 
@@ -462,6 +517,29 @@ def generate_synthetic_pool(
                     yac=yac,
                     fumbles_lost=round(r(0, 2) * talent, 1),
                     two_pt=round(r(0, 1) * talent, 1),
+                )
+
+            # --- Contingent upside & variance signals (MATH_MODELS.md §6) ---
+            if rank == 1:
+                top_xfp[position] = compute_xfp(proj, reference)
+
+            is_rookie = rank % 11 == 0
+            is_backup_rb = position == "RB" and rank >= 40
+
+            proj.is_rookie = is_rookie
+            proj.is_backup_rb = is_backup_rb
+            proj.experience_years = 0 if is_rookie else 1 + (rank % 8)
+
+            if is_backup_rb or is_rookie:
+                # Lotto-ticket contingent value: what they inherit if the
+                # starter misses time (75% of the starter's xFP).
+                proj.starter_xfp = round(
+                    top_xfp.get(position, 0.0) * r(0.9, 1.0), 2
+                )
+            else:
+                # Veteran right-tail variance from historical weekly stdev.
+                proj.weekly_stdev = round(
+                    weekly_stdev_base[position] * talent * r(0.7, 1.3), 2
                 )
 
             # Historical ADP volatility and a deterministic bye week (5-14).

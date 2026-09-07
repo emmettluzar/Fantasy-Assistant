@@ -2,7 +2,7 @@
 
 Public API surface for Phase 1: baseline projections, dynamic VORP, and the
 master decision utility (Make-It-Back probability plus roster-need / bye
-logic).
+logic, and the contingent-upside coefficient from MATH_MODELS.md §6).
 """
 
 from .dvorp import (
@@ -26,12 +26,23 @@ from .models import (
     ScoringRules,
 )
 from .probability import (
+    DEFAULT_ALPHA,
+    DEFAULT_BETA,
+    DEFAULT_DELTA,
+    DEFAULT_EPSILON,
+    DEFAULT_GAMMA,
+    UPSIDE_ALPHA_FLOOR,
+    UPSIDE_EPSILON_MAX,
+    UPSIDE_SHIFT_AFTER,
+    UPSIDE_SHIFT_FULL,
     DecisionContext,
     DecisionWeights,
     UtilityComponents,
     bye_overlap_penalty,
     compute_player_dvorp_map,
     decision_utility,
+    dvorp_to_unit,
+    dynamic_upside_weights,
     make_it_back_matrix,
     make_it_back_probability,
     rank_decisions,
@@ -42,6 +53,7 @@ from .projections import (
     ProjectionDataError,
     build_projection_pool,
     compute_fantasy_points,
+    compute_upside_score,
     compute_wopr,
     compute_xfp,
     estimate_cpoe,
@@ -50,11 +62,21 @@ from .projections import (
     generate_synthetic_pool,
     load_nfl_players,
     normalize_derived_metrics,
+    normalize_upside_scores,
 )
 
 __all__ = [
     "DEFAULT_ADP_STD",
+    "DEFAULT_ALPHA",
+    "DEFAULT_BETA",
+    "DEFAULT_DELTA",
+    "DEFAULT_EPSILON",
+    "DEFAULT_GAMMA",
     "FLEX_ALLOCATION",
+    "UPSIDE_ALPHA_FLOOR",
+    "UPSIDE_EPSILON_MAX",
+    "UPSIDE_SHIFT_AFTER",
+    "UPSIDE_SHIFT_FULL",
     "DecisionContext",
     "DecisionWeights",
     "DraftPick",
@@ -75,10 +97,13 @@ __all__ = [
     "compute_fantasy_points",
     "compute_player_dvorp_map",
     "compute_replacement_baseline",
+    "compute_upside_score",
     "compute_wopr",
     "compute_xfp",
     "count_drafted_by_pos",
     "decision_utility",
+    "dvorp_to_unit",
+    "dynamic_upside_weights",
     "estimate_cpoe",
     "estimate_epa_per_play",
     "filter_available",
@@ -87,6 +112,7 @@ __all__ = [
     "make_it_back_matrix",
     "make_it_back_probability",
     "normalize_derived_metrics",
+    "normalize_upside_scores",
     "rank_by_dvorp",
     "rank_decisions",
     "roster_need_factor",
