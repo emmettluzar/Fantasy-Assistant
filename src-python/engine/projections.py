@@ -9,6 +9,8 @@ records containing the derived metrics defined in MATH_MODELS.md:
 * EPA  -- estimated EPA per play
 * CPOE -- completion percentage over expected
 * fantasy_points -- projected points under the active scoring rules
+* tier -- positional xFP tier (sorted-difference clustering, MATH_MODELS.md §7)
+* tier_remaining -- players still available in that same tier
 
 All scoring-sensitive formulas read multipliers directly from the active
 :class:`~engine.models.ScoringRules`, so the same projections can be
@@ -199,7 +201,8 @@ def normalize_derived_metrics(
         p.xfp = compute_xfp(p, scoring)
         p.fantasy_points = compute_fantasy_points(p, scoring)
         enriched.append(p)
-    return normalize_upside_scores(enriched)
+    enriched = normalize_upside_scores(enriched)
+    return compute_positional_tiers(enriched)
 
 
 def compute_upside_score(proj: PlayerProjection) -> float:
@@ -249,6 +252,106 @@ def normalize_upside_scores(
         for k in range(i, j + 1):
             pool[order[k]].upside_score = float(norm)
         i = j + 1
+    return pool
+
+
+# ---------------------------------------------------------------------------
+# Positional tiers & run detection (MATH_MODELS.md §7)
+# ---------------------------------------------------------------------------
+
+# A natural-break boundary is only introduced where the xFP drop between two
+# sorted players exceeds both a small absolute floor and ``_TIER_GAP_FACTOR``
+# times the position's mean adjacent gap. A tier must also retain at least
+# ``_TIER_MIN_SIZE`` players on each side of the boundary. Tiers of size 2 are
+# what make the ``N_tier == 1`` / ``N_tier == 2`` scarcity cases reachable.
+_TIER_MIN_ABS_GAP = 0.5
+_TIER_GAP_FACTOR = 1.5
+_TIER_MIN_SIZE = 2
+
+
+def _split_position_tiers(xfps: list[float]) -> list[int]:
+    """Greedy natural-breaks labels for one position's descending xFP values.
+
+    ``xfps`` must already be sorted descending. The algorithm repeatedly
+    splits the current segment at its largest qualifying gap until no gap
+    clears the threshold; the final leaf segments become tier labels in
+    left-to-right (highest-to-lowest xFP) order. Complexity is O(n) per split
+    with at most n / min_size tiers, i.e. well under a millisecond for the
+    positional pool sizes used here.
+    """
+    n = len(xfps)
+    labels = [0] * n
+    if n <= _TIER_MIN_SIZE:
+        return labels
+
+    gaps = [xfps[i - 1] - xfps[i] for i in range(1, n)]
+    mean_gap = sum(gaps) / len(gaps)
+    threshold = max(_TIER_MIN_ABS_GAP, mean_gap * _TIER_GAP_FACTOR)
+
+    # ``segments`` holds (start, end) half-open intervals partitioning the
+    # [0, n) index range. When a segment splits, its two children replace it;
+    # because children may themselves split later, we process a segment and,
+    # on a split, substitute its children in place. The leaves are finally
+    # sorted by start index so tier labels remain monotonic (tier 0 =
+    # highest xFP tier).
+    segments: list[tuple[int, int]] = [(0, n)]
+    i = 0
+    while i < len(segments):
+        start, end = segments[i]
+        best_gap = -1.0
+        best_j = -1
+        for j in range(start + 1, end):
+            gap = xfps[j - 1] - xfps[j]
+            if gap < threshold:
+                continue
+            if (j - start) < _TIER_MIN_SIZE or (end - j) < _TIER_MIN_SIZE:
+                continue
+            if gap > best_gap:
+                best_gap = gap
+                best_j = j
+        if best_j > 0:
+            segments[i : i + 1] = [(start, best_j), (best_j, end)]
+        else:
+            i += 1
+
+    segments.sort(key=lambda seg: seg[0])
+    for tier, (start, end) in enumerate(segments):
+        for idx in range(start, end):
+            labels[idx] = tier
+    return labels
+
+
+def compute_positional_tiers(
+    players: Sequence[PlayerProjection],
+) -> list[PlayerProjection]:
+    """Assign positional xFP tiers to every player.
+
+    Within each position the pool is sorted by xFP descending and natural
+    breaks are found via :func:`_split_position_tiers`. Each player gets a
+    0-based ``tier`` index (0 = highest-value tier) and a ``tier_remaining``
+    count of players sharing that tier (MATH_MODELS.md §7). This is the
+    static full-pool tiering; the count is later re-derived from the still-
+    available pool during ranking so it reflects a live positional run.
+    """
+    pool = [p.model_copy(deep=True) for p in players]
+    groups: dict[str, list[PlayerProjection]] = {}
+    for p in pool:
+        groups.setdefault(p.position, []).append(p)
+
+    for group in groups.values():
+        if len(group) <= 1:
+            for p in group:
+                p.tier = 0
+                p.tier_remaining = len(group)
+            continue
+        group.sort(key=lambda p: p.xfp, reverse=True)
+        labels = _split_position_tiers([p.xfp for p in group])
+        counts: dict[int, int] = {}
+        for p, tier in zip(group, labels):
+            p.tier = tier
+            counts[tier] = counts.get(tier, 0) + 1
+        for p in group:
+            p.tier_remaining = counts[p.tier]
     return pool
 
 

@@ -11,6 +11,11 @@ Implements MATH_MODELS.md §4, §5, and §6:
 with default weights alpha = 0.40, beta = 0.35, gamma = 0.20, delta = 0.05,
 epsilon = 0.12 (upside coefficient for contingent/variance value, §6).
 
+The final utility is multiplied by a positional scarcity multiplier S_m
+(MATH_MODELS.md §7): when a player is the last (N_tier == 1) or second-to-last
+(N_tier == 2) asset remaining in their positional xFP tier, S_m boosts the
+score to prioritize halting a positional run.
+
 As the user's roster fills (``user_picks`` rises), ``alpha`` decays toward
 zero while ``epsilon`` scales up, shifting the engine from safe median DVORP
 toward high-variance / contingent-upside targets in the final bench rounds.
@@ -53,6 +58,10 @@ UPSIDE_SHIFT_FULL = 14
 UPSIDE_ALPHA_FLOOR = 0.10
 UPSIDE_EPSILON_MAX = 0.30
 
+# Positional scarcity multiplier (MATH_MODELS.md §7).
+SCARCITY_LAST = 1.15
+SCARCITY_SECOND_LAST = 1.05
+
 
 @dataclass
 class DecisionWeights:
@@ -83,6 +92,8 @@ class UtilityComponents:
     r_need: float
     p_bye: float
     upside: float
+    tier_remaining: int
+    scarcity: float
     utility: float
 
 
@@ -120,6 +131,36 @@ def make_it_back_matrix(
 ) -> dict[str, float]:
     """Compute P_MB for a pool of players at one pick horizon."""
     return {p.player_id: make_it_back_probability(p, r_next) for p in players}
+
+
+def scarcity_multiplier(tier_remaining: int) -> float:
+    """Positional scarcity multiplier ``S_m`` (MATH_MODELS.md §7).
+
+    ``S_m = 1.15`` when the player is the last asset in their tier
+    (``N_tier == 1``), ``1.05`` when two remain (``N_tier == 2``), and
+    ``1.0`` otherwise.
+    """
+    if tier_remaining <= 1:
+        return SCARCITY_LAST
+    if tier_remaining == 2:
+        return SCARCITY_SECOND_LAST
+    return 1.0
+
+
+def compute_tier_remaining_map(
+    players: Sequence[PlayerProjection],
+) -> dict[tuple[Position, int], int]:
+    """Count available players per ``(position, tier)`` pair.
+
+    The returned counts are the live ``N_tier`` values for run detection:
+    for each available player we can look up how many remain in their
+    positional xFP tier.
+    """
+    counts: dict[tuple[Position, int], int] = {}
+    for p in players:
+        key = (p.position, int(getattr(p, "tier", 0)))
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +314,7 @@ def score_decision(
     context: DecisionContext,
     *,
     dvorp: Optional[float] = None,
+    tier_remaining: Optional[int] = None,
 ) -> UtilityComponents:
     """Compute the decision utility for a single player.
 
@@ -280,6 +322,11 @@ def score_decision(
     consulted by ``player_id``. The signed DVORP is safely scaled to a 0-1
     positive range before multiplying by ``alpha`` so the dynamic alpha/epsilon
     shift re-weights DVORP and upside on a comparable scale.
+
+    ``tier_remaining`` is the live count of available players sharing the
+    player's positional xFP tier (``N_tier``); the final utility is
+    multiplied by the scarcity multiplier :func:`scarcity_multiplier`.
+    When omitted the player's static ``tier_remaining`` is used as a fallback.
     """
     pv = dvorp if dvorp is not None else context.dvorp.get(player.player_id, 0.0)
     raw_dvorp = context.dvorp.get(player.player_id, pv)
@@ -288,8 +335,19 @@ def score_decision(
     p_bye = bye_overlap_penalty(player, context.starters_bye)
     upside = float(getattr(player, "upside_score", 0.0) or 0.0)
     dvorp_scaled = float(dvorp_to_unit(raw_dvorp))
-    u = decision_utility(
-        dvorp_scaled, p_mb, r_need, p_bye, upside, context.weights
+
+    n_tier = int(
+        tier_remaining
+        if tier_remaining is not None
+        else (getattr(player, "tier_remaining", 0) or 0)
+    )
+    if n_tier <= 0:
+        n_tier = 1
+    s_m = scarcity_multiplier(n_tier)
+
+    u = (
+        decision_utility(dvorp_scaled, p_mb, r_need, p_bye, upside, context.weights)
+        * s_m
     )
     return UtilityComponents(
         player_id=player.player_id,
@@ -299,6 +357,8 @@ def score_decision(
         r_need=r_need,
         p_bye=p_bye,
         upside=upside,
+        tier_remaining=n_tier,
+        scarcity=s_m,
         utility=u,
     )
 
@@ -326,8 +386,14 @@ def rank_decisions(
         dvorp_lookup[player_id] = value
     effective.dvorp = dvorp_lookup
 
+    tier_map = compute_tier_remaining_map(players)
     scored = [
-        score_decision(p, effective, dvorp=dvorp_map.get(p.player_id))
+        score_decision(
+            p,
+            effective,
+            dvorp=dvorp_map.get(p.player_id),
+            tier_remaining=tier_map.get((p.position, int(getattr(p, "tier", 0))), 1),
+        )
         for p in players
     ]
     scored.sort(key=lambda c: (c.utility, c.dvorp), reverse=True)
@@ -359,6 +425,10 @@ __all__ = [
     "decision_utility",
     "dynamic_upside_weights",
     "dvorp_to_unit",
+    "scarcity_multiplier",
+    "compute_tier_remaining_map",
+    "SCARCITY_LAST",
+    "SCARCITY_SECOND_LAST",
     "score_decision",
     "rank_decisions",
     "compute_player_dvorp_map",

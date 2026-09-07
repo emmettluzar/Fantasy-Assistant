@@ -229,6 +229,12 @@ class PlayerProjection(BaseModel):
 
     upside_score: float = Field(default=0.0, description="Normalized 0-1 contingent upside / variance score")
 
+    # Positional tiering (MATH_MODELS.md §7). ``tier`` is the 0-based tier
+    # index (0 = highest xFP tier) assigned by sorted-difference clustering;
+    # ``tier_remaining`` counts available players still in that tier.
+    tier: int = Field(default=0, description="0-based positional xFP tier index")
+    tier_remaining: int = Field(default=0, description="Players remaining in this tier")
+
     model_config = ConfigDict(extra="ignore", validate_assignment=True)
 
 

@@ -35,6 +35,7 @@ from engine.probability import (
     DecisionContext,
     compute_player_dvorp_map,
     rank_decisions,
+    scarcity_multiplier,
 )
 from engine.projections import build_projection_pool, filter_available
 
@@ -209,7 +210,65 @@ def draft_scenario(config: LeagueConfig, title: str, seed: int = 7) -> None:
             print("UPSIDE SHIFT: FAIL (late picks still favor low-ceiling veterans)")
 
 
+def verify_scarcity_multiplier() -> None:
+    """Positional tier scarcity (MATH_MODELS.md §7) acceptance checks."""
+    print("\n" + "=" * 78)
+    print("Positional Tiers & Run Detection (Scarcity Multiplier S_m)")
+    print("=" * 78)
+
+    # 1. S_m lookup values.
+    assert scarcity_multiplier(1) == 1.15
+    assert scarcity_multiplier(2) == 1.05
+    assert scarcity_multiplier(3) == 1.0
+    assert scarcity_multiplier(25) == 1.0
+    assert scarcity_multiplier(0) == 1.15  # defensive: no data -> last asset
+    print("S_m lookup: N=1 -> 1.15, N=2 -> 1.05, else -> 1.0  ... PASS")
+
+    # 2. Clustering assigns monotonic (tier 0 == highest xFP) tiers and, when
+    #    a tier is reduced to one remaining player, rank_decisions applies the
+    #    scarcity multiplier to the final utility.
+    cfg = LeagueConfig.full_ppr()
+    pool = build_projection_pool(cfg, allow_network=False, seed=7)
+
+    qb_tier0 = sorted(
+        (p for p in pool if p.position == "QB" and p.tier == 0),
+        key=lambda p: p.xfp,
+        reverse=True,
+    )
+    assert len(qb_tier0) == 2, "expected QB top tier to hold exactly 2 players"
+    keep = qb_tier0[0]
+
+    # Draft everything except ``keep``: only one QB remains in tier 0.
+    drafted = {p.player_id for p in pool if p.player_id != keep.player_id}
+    remaining = filter_available(pool, drafted)
+
+    from engine.dvorp import compute_all_dvorp
+    from engine.probability import compute_player_dvorp_map
+
+    dvorp_results = compute_all_dvorp(
+        cfg, remaining, {"QB": len(pool)}
+    )
+    dvorp_map = compute_player_dvorp_map(dvorp_results)
+    context = DecisionContext(
+        dvorp=dvorp_map,
+        roster_slots=cfg.roster_slots,
+        owned={},
+        starters_bye={},
+        r_next=12.0,
+    )
+    ranked = rank_decisions(remaining, context, dvorp_by_id=dvorp_map)
+    kept = next(c for c in ranked if c.player_id == keep.player_id)
+    assert kept.tier_remaining == 1
+    assert kept.scarcity == 1.15, f"expected S_m=1.15, got {kept.scarcity}"
+    print(
+        f"Run detection: last-in-tier {kept.player_id} -> "
+        f"N_tier={kept.tier_remaining}, S_m={kept.scarcity:.2f} "
+        f"(utility {kept.utility:.4f}) ... PASS"
+    )
+
+
 def main() -> None:
+    verify_scarcity_multiplier()
     ppr = LeagueConfig.full_ppr()
     draft_scenario(ppr, "Scenario 1: Standard 12-team Full-PPR")
 
