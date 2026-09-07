@@ -44,3 +44,22 @@ Every calculation must dynamically accept a `LeagueConfig` dictionary with defau
   - Default weights: alpha = 0.40, beta = 0.35, gamma = 0.20, delta = 0.05
   - R_need(p): Multiplier based on remaining open starter slots for position p on the user's roster.
   - P_bye(i): Penalty applied if player shares bye week with primary starters.
+
+  ## 6. Contingent Upside & Right-Tail Variance
+- **Upside Score ($V_{upside}$):**
+  - **Veterans:** Derived from the standard deviation ($\sigma$) of historical weekly fantasy points to isolate high-variance ceilings.
+  - **Rookies / Backup RBs:** Calculated via Contingent Value. $\text{Contingent Value} = E[FP_{starter}] \cdot 0.75$.
+  - Both metrics are combined and normalized into a single $V_{upside}$ score ranging from 0 to 1 across the available player pool.
+- **Dynamic Utility Shift:**
+  - The master utility function $U_i(t)$ introduces a new upside coefficient $\epsilon \cdot V_{upside}$.
+  - In early rounds (filling starters), $\alpha$ (safety/DVORP) is weighted heavily and $\epsilon$ is near zero.
+  - In late rounds (filling bench slots), $\alpha$ dynamically decays and $\epsilon$ scales up, prioritizing asymmetric upside targets over low-ceiling veterans.
+
+  ## 7. Positional Tiers & Run Detection
+- **Clustering:** 
+  - Apply 1D K-Means or natural breaks clustering to the $xFP$ of the top available players at each position (QB, RB, WR, TE) to establish discrete scoring tiers.
+- **Scarcity Multiplier ($S_m$):**
+  - If a player is the last remaining asset in a high-value tier, apply a scarcity multiplier ($S_m \ge 1.0$).
+  - If $N_{tier}$ (players remaining in the current tier) $= 1$, $S_m = 1.15$.
+  - If $N_{tier}$ $= 2$, $S_m = 1.05$.
+  - The Master Decision Utility Function $U_i(t)$ is multiplied by $S_m$ to prioritize halting a positional run.
