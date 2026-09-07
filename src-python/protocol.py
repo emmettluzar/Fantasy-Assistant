@@ -50,6 +50,7 @@ class SyncLeagueConfigPayload(LeagueConfig):
             scoring=self.scoring,
             roster_slots=self.roster_slots,
             teams_count=self.teams_count,
+            is_dynasty=self.is_dynasty,
         )
 
 

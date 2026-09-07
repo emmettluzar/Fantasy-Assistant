@@ -63,3 +63,13 @@ Every calculation must dynamically accept a `LeagueConfig` dictionary with defau
   - If $N_{tier}$ (players remaining in the current tier) $= 1$, $S_m = 1.15$.
   - If $N_{tier}$ $= 2$, $S_m = 1.05$.
   - The Master Decision Utility Function $U_i(t)$ is multiplied by $S_m$ to prioritize halting a positional run.
+
+  ## 8. Dynasty Multi-Year Valuation & Age Curves ($V_{dynasty}$)
+- **Active Flag:** Triggered when `LeagueConfig.is_dynasty == True` (or format is set to Dynasty in the UI).
+- **Multi-Year Horizon Discount ($H=3, r=0.15$):**
+  $$V_{dynasty}(i) = \sum_{h=0}^{H-1} \frac{E[FP_i] \cdot A_{factor}(\text{pos}, \text{age}_i + h)}{(1 + r)^h}$$
+- **RB Age Curve ($A_{factor}$):** Peak $\le 25$ (1.0 multiplier), ages 26-27 (0.80), 28-29 (0.55), 30+ (0.30).
+- **WR Age Curve ($A_{factor}$):** Peak $\le 28$ (1.0 multiplier), ages 29-30 (0.85), 31-32 (0.65), 33+ (0.40).
+- **TE Age Curve ($A_{factor}$):** Peak $\le 29$ (1.0 multiplier), ages 30-31 (0.85), 32-33 (0.65), 34+ (0.40).
+- **QB Age Curve ($A_{factor}$):** Peak $\le 31$ (1.0 multiplier), ages 32-34 (0.90), 35-37 (0.75), 38+ (0.50).
+- **Engine Integration:** In Dynasty mode, replace the single-season baseline $E[FP_i]$ in the $DVORP$ calculation with the annualized dynasty utility value $V_{dynasty}(i)$. Maintain all contingent upside, tier scarcity, and $P_{MB}$ mechanics.

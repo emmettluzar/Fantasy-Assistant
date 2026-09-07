@@ -112,6 +112,8 @@ export interface LeagueConfig {
   scoring: ScoringRules;
   roster_slots: RosterSettings;
   teams_count: number;
+  /** Dynasty mode: apply multi-year age-curve valuation (MATH_MODELS.md §8). */
+  is_dynasty?: boolean;
 }
 
 export const DEFAULT_LEAGUE_CONFIG: LeagueConfig = {
@@ -119,6 +121,7 @@ export const DEFAULT_LEAGUE_CONFIG: LeagueConfig = {
   scoring: DEFAULT_SCORING,
   roster_slots: DEFAULT_ROSTER,
   teams_count: 12,
+  is_dynasty: false,
 };
 
 // ---------------------------------------------------------------------------

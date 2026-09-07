@@ -23,6 +23,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Mapping, Optional, Sequence
 
+from .dynasty import effective_projection
 from .models import LeagueConfig, PlayerProjection, Position, SKILL_POSITIONS
 
 
@@ -69,8 +70,14 @@ def compute_replacement_baseline(
     position: Position,
     remaining: Sequence[PlayerProjection],
     n: int,
+    *,
+    is_dynasty: bool = False,
 ) -> float:
-    """Projected points of the ``n``-th best remaining player at ``position``.
+    """Projected (or dynasty) value of the ``n``-th best remaining player.
+
+    In dynasty mode each player's value is :func:`~engine.dynasty.effective_projection`
+    (single-season ``E[FP]`` replaced by ``V_dynasty``), so the replacement
+    threshold and DVORP stay on the same multi-year scale (MATH_MODELS.md §8).
 
     If fewer than ``n`` players remain, the baseline collapses to the lowest
     remaining projection (or 0.0 when the position is exhausted).
@@ -80,7 +87,9 @@ def compute_replacement_baseline(
     same_pos = [p for p in remaining if p.position == position]
     if not same_pos:
         return 0.0
-    sorted_fp = sorted((p.fantasy_points for p in same_pos), reverse=True)
+    sorted_fp = sorted(
+        (effective_projection(p, is_dynasty) for p in same_pos), reverse=True
+    )
     if n > len(sorted_fp):
         return sorted_fp[-1]
     return sorted_fp[n - 1]
@@ -96,21 +105,30 @@ def compute_baselines(
 
     ``remaining`` should be the currently undrafted player pool and
     ``drafted_by_pos`` the count of players already selected at each position.
+    Dynasty mode is read from ``config.is_dynasty``.
     """
     drafted = dict(drafted_by_pos or {})
     baselines: dict[Position, float] = {}
     for position in positions:
         n = _replacement_count(config, position, drafted_by_pos=drafted)
-        baselines[position] = compute_replacement_baseline(position, remaining, n)
+        baselines[position] = compute_replacement_baseline(
+            position, remaining, n, is_dynasty=config.is_dynasty
+        )
     return ReplacementBaseline(baselines=baselines)
 
 
 def compute_dvorp(
     player: PlayerProjection,
     baseline: float,
+    *,
+    is_dynasty: bool = False,
 ) -> float:
-    """Per-player DVORP: projection minus the positional replacement baseline."""
-    return float(player.fantasy_points - baseline)
+    """Per-player DVORP: value minus the positional replacement baseline.
+
+    In dynasty mode ``value`` is ``V_dynasty(i)`` rather than single-season
+    ``fantasy_points`` (MATH_MODELS.md §8); in redraft mode it is unchanged.
+    """
+    return float(effective_projection(player, is_dynasty) - baseline)
 
 
 def compute_all_dvorp(
@@ -125,6 +143,7 @@ def compute_all_dvorp(
     """
     drafted = dict(drafted_by_pos or {})
     baselines = compute_baselines(config, remaining, drafted_by_pos=drafted)
+    is_dynasty = config.is_dynasty
     results: list[DvorpResult] = []
     for p in remaining:
         baseline = baselines.get(p.position, 0.0)
@@ -132,9 +151,9 @@ def compute_all_dvorp(
             DvorpResult(
                 player_id=p.player_id,
                 position=p.position,
-                projection=p.fantasy_points,
+                projection=effective_projection(p, is_dynasty),
                 replacement=baseline,
-                dvorp=compute_dvorp(p, baseline),
+                dvorp=compute_dvorp(p, baseline, is_dynasty=is_dynasty),
             )
         )
     return results

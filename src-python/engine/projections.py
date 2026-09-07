@@ -32,6 +32,10 @@ from .models import (
     ScoringRules,
 )
 
+# Sensible positional age defaults reused when age data is unavailable. Kept in
+# sync with ``engine.dynasty.DEFAULT_AGE`` (the dynasty age-curve module).
+DEFAULT_AGE: dict[str, int] = {"QB": 25, "RB": 24, "WR": 24, "TE": 25}
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -366,6 +370,11 @@ _DEFAULT_POOL_SIZE: dict[Position, int] = {
     "TE": 36,
 }
 
+# Deterministic positional age distribution for the synthetic fallback pool.
+# ``rank % spread`` keeps ages bounded and stable across seeds.
+_SYNTHETIC_BASE_AGE: dict[str, int] = {"QB": 23, "RB": 22, "WR": 22, "TE": 23}
+_SYNTHETIC_AGE_SPREAD: dict[str, int] = {"QB": 15, "RB": 11, "WR": 13, "TE": 12}
+
 
 class ProjectionDataError(RuntimeError):
     """Raised when no external projection source can be loaded."""
@@ -391,6 +400,30 @@ def _row_str(df: pd.DataFrame, row: int, *candidates: str, default: str = "") ->
     return default
 
 
+def _age_from_birth_date(birth_date, season: int) -> Optional[int]:
+    """Compute a player's age in a season from a birth-date value.
+
+    Accepts ``datetime.date`` / ``datetime.datetime`` / ``pd.Timestamp`` or a
+    ``YYYY-MM-DD`` string. Returns ``None`` when the value is missing or not
+    parseable so callers can apply a positional default.
+    """
+    if birth_date is None:
+        return None
+    if pd.isna(birth_date):
+        return None
+    try:
+        if isinstance(birth_date, str):
+            year = int(birth_date[:4])
+        else:
+            year = getattr(birth_date, "year", None)
+        if year is None:
+            return None
+        age = season - int(year)
+        return age if 18 <= age <= 60 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def load_nfl_players(season: int) -> list[PlayerProjection]:
     """Load season-level player stats from ``nfl_data_py`` into projections.
 
@@ -414,8 +447,8 @@ def load_nfl_players(season: int) -> list[PlayerProjection]:
     if stats is None or stats.empty:
         raise ProjectionDataError(f"nfl_data_py returned no data for {season}")
 
-    # Build gsis_id -> (name, position, team) lookup.
-    lookup: dict[str, tuple[str, str, str]] = {}
+    # Build gsis_id -> (name, position, team, birth_date) lookup.
+    lookup: dict[str, tuple[str, str, str, object]] = {}
     if lookup_df is not None and not lookup_df.empty:
         for row in lookup_df.itertuples(index=False):
             gsis = getattr(row, "gsis_id", None)
@@ -425,14 +458,21 @@ def load_nfl_players(season: int) -> list[PlayerProjection]:
                 str(getattr(row, "display_name", "") or ""),
                 str(getattr(row, "position", "") or "").upper(),
                 str(getattr(row, "latest_team", "") or ""),
+                getattr(row, "birth_date", None),
             )
 
     players: list[PlayerProjection] = []
     for idx in range(len(stats)):
         raw_id = _row_str(stats, idx, "player_id", "gsis_id")
-        name, position, team = lookup.get(raw_id, ("", "", ""))
+        name, position, team, birth_date = lookup.get(raw_id, ("", "", "", None))
         if position not in {"QB", "RB", "WR", "TE"}:
             continue
+
+        # Extract age from the players table's birth date, falling back to a
+        # sensible positional default when it is missing/unparseable.
+        age = _age_from_birth_date(birth_date, season)
+        if age is None:
+            age = DEFAULT_AGE.get(position, 25)
 
         pass_attempts = _row_value(stats, idx, "attempts", "passing_attempts")
         completions = _row_value(stats, idx, "completions")
@@ -469,11 +509,12 @@ def load_nfl_players(season: int) -> list[PlayerProjection]:
         )
 
         players.append(
-            PlayerProjection(
+             PlayerProjection(
                 player_id=raw_id or name,
                 name=name or raw_id,
                 position=position,  # type: ignore[arg-type]
                 team=team,
+                age=age,
                 pass_attempts=pass_attempts,
                 completions=completions,
                 pass_yards=pass_yards,
@@ -632,6 +673,11 @@ def generate_synthetic_pool(
             proj.is_rookie = is_rookie
             proj.is_backup_rb = is_backup_rb
             proj.experience_years = 0 if is_rookie else 1 + (rank % 8)
+
+            # Deterministic age spread per position (dynasty age curves, §8).
+            # Younger ranks sit closer to the positional peak, older ranks
+            # decline, giving dynasty mode a realistic age distribution.
+            proj.age = _SYNTHETIC_BASE_AGE[position] + (rank % _SYNTHETIC_AGE_SPREAD[position])
 
             if is_backup_rb or is_rookie:
                 # Lotto-ticket contingent value: what they inherit if the

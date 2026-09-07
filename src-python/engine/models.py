@@ -109,6 +109,10 @@ class LeagueConfig(BaseModel):
     scoring: ScoringRules = Field(default_factory=ScoringRules)
     roster_slots: RosterSettings = Field(default_factory=RosterSettings)
     teams_count: int = Field(default=12, ge=2, le=32)
+    is_dynasty: bool = Field(
+        default=False,
+        description="Dynasty mode: apply multi-year age-curve valuation (MATH_MODELS.md §8)",
+    )
 
     model_config = ConfigDict(frozen=False, extra="forbid")
 
@@ -162,6 +166,15 @@ class LeagueConfig(BaseModel):
         )
 
     @classmethod
+    def dynasty(cls) -> "LeagueConfig":
+        """Dynasty (full PPR with multi-year age-curve valuation enabled)."""
+        return cls(
+            name="Dynasty",
+            scoring=ScoringRules(rec=1.0),
+            is_dynasty=True,
+        )
+
+    @classmethod
     def presets(cls) -> Dict[str, "LeagueConfig"]:
         """All built-in presets keyed by display name."""
         return {
@@ -170,6 +183,7 @@ class LeagueConfig(BaseModel):
             "Full-PPR": cls.full_ppr(),
             "Superflex": cls.superflex(),
             "TE-Premium": cls.te_premium(),
+            "Dynasty": cls.dynasty(),
         }
 
 
@@ -180,6 +194,11 @@ class PlayerProjection(BaseModel):
     name: str
     position: Position
     team: str = ""
+
+    age: Optional[int] = Field(
+        default=None,
+        description="Player age used for dynasty age-curve valuation (MATH_MODELS.md §8)",
+    )
 
     adp: Optional[float] = Field(default=None, description="Average draft position (overall pick)")
     adp_std: float = Field(default=DEFAULT_ADP_STD, description="Historical ADP standard deviation")

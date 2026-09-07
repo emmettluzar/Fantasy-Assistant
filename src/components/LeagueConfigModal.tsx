@@ -74,6 +74,7 @@ export default function LeagueConfigModal({
         scoring === "full-ppr" ? "Full-PPR" : scoring === "half-ppr" ? "Half-PPR" : "Standard"
       }${tePremium ? " · TE-Premium" : ""}${superflex ? " · Superflex" : ""}`,
       teams_count: teamsCount,
+      is_dynasty: format === "dynasty",
       scoring: {
         pass_yd: 0.04,
         pass_td: 4.0,

@@ -191,6 +191,9 @@ fn d_name() -> String {
 fn d_teams_count() -> i32 {
     12
 }
+fn d_is_dynasty() -> bool {
+    false
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeagueConfig {
@@ -202,6 +205,8 @@ pub struct LeagueConfig {
     pub roster_slots: RosterSettings,
     #[serde(default = "d_teams_count")]
     pub teams_count: i32,
+    #[serde(default = "d_is_dynasty")]
+    pub is_dynasty: bool,
 }
 
 impl Default for LeagueConfig {
@@ -211,6 +216,7 @@ impl Default for LeagueConfig {
             scoring: ScoringRules::default(),
             roster_slots: RosterSettings::default(),
             teams_count: d_teams_count(),
+            is_dynasty: d_is_dynasty(),
         }
     }
 }

@@ -267,8 +267,87 @@ def verify_scarcity_multiplier() -> None:
     )
 
 
+def verify_dynasty() -> None:
+    """Dynasty multi-year valuation (MATH_MODELS.md §8) acceptance checks."""
+    from engine.dynasty import age_factor, dynasty_value
+
+    print("\n" + "=" * 78)
+    print("Dynasty Multi-Year Valuation & Age Curves (V_dynasty)")
+    print("=" * 78)
+
+    # 1. Positional age-curve lookups match MATH_MODELS.md §8.
+    assert age_factor("RB", 25) == 1.0
+    assert age_factor("RB", 26) == 0.80
+    assert age_factor("RB", 27) == 0.80
+    assert age_factor("RB", 28) == 0.55
+    assert age_factor("RB", 29) == 0.55
+    assert age_factor("RB", 30) == 0.30
+    assert age_factor("WR", 28) == 1.0
+    assert age_factor("WR", 29) == 0.85
+    assert age_factor("WR", 31) == 0.65
+    assert age_factor("WR", 33) == 0.40
+    assert age_factor("TE", 29) == 1.0
+    assert age_factor("TE", 30) == 0.85
+    assert age_factor("TE", 32) == 0.65
+    assert age_factor("TE", 34) == 0.40
+    assert age_factor("QB", 31) == 1.0
+    assert age_factor("QB", 32) == 0.90
+    assert age_factor("QB", 35) == 0.75
+    assert age_factor("QB", 38) == 0.50
+    print("Age curves (A_factor): RB/WR/TE/QB buckets ... PASS")
+
+    # 2. Multi-year discount formula V_dynasty(i).
+    young_value = dynasty_value(100.0, "RB", 22)
+    expected = 100.0 * 1.0 + 100.0 * 1.0 / 1.15 + 100.0 * 1.0 / (1.15**2)
+    assert abs(young_value - expected) < 1e-9
+
+    old_value = dynasty_value(100.0, "RB", 29)
+    assert old_value < young_value
+    print(
+        f"V_dynasty: RB age 22 (FP=100) -> {young_value:.2f} vs "
+        f"RB age 29 (FP=100) -> {old_value:.2f} ... PASS"
+    )
+
+    # 3. DVORP substitution: a young player out-ranks an older veteran with an
+    #    identical single-year projection in dynasty mode, but ties in redraft.
+    young = PlayerProjection(
+        player_id="RB_YOUNG",
+        name="Young RB",
+        position="RB",
+        fantasy_points=200.0,
+        age=22,
+    )
+    old = PlayerProjection(
+        player_id="RB_OLD",
+        name="Old RB",
+        position="RB",
+        fantasy_points=200.0,
+        age=29,
+    )
+    redraft = LeagueConfig.full_ppr()
+    dynasty = LeagueConfig.dynasty()
+
+    redraft_results = compute_all_dvorp(redraft, [young, old], {})
+    rb_ids = {r.player_id: r for r in redraft_results}
+    assert abs(rb_ids["RB_YOUNG"].dvorp - rb_ids["RB_OLD"].dvorp) < 1e-9, (
+        "redraft should not distinguish age"
+    )
+
+    dynasty_results = compute_all_dvorp(dynasty, [young, old], {})
+    db_ids = {r.player_id: r for r in dynasty_results}
+    assert db_ids["RB_YOUNG"].dvorp > db_ids["RB_OLD"].dvorp, (
+        "dynasty mode must prioritize the younger player"
+    )
+    print(
+        f"DVORP substitution: dynasty young={db_ids['RB_YOUNG'].dvorp:.2f} "
+        f"> old={db_ids['RB_OLD'].dvorp:.2f} "
+        f"(redraft tie at 0.00) ... PASS"
+    )
+
+
 def main() -> None:
     verify_scarcity_multiplier()
+    verify_dynasty()
     ppr = LeagueConfig.full_ppr()
     draft_scenario(ppr, "Scenario 1: Standard 12-team Full-PPR")
 
@@ -279,6 +358,9 @@ def main() -> None:
         teams_count=12,
     )
     draft_scenario(custom, "Scenario 2: Custom 6pt Pass-TD / Full-PPR Superflex")
+
+    dynasty = LeagueConfig.dynasty()
+    draft_scenario(dynasty, "Scenario 3: Dynasty (Multi-Year Age-Curve Valuation)")
 
 
 if __name__ == "__main__":
